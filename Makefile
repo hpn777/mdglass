@@ -4,7 +4,7 @@ SUDO    ?= sudo
 
 TARGET_DIR = $(shell cargo metadata --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' | head -1)
 
-.PHONY: build release test check install uninstall clean
+.PHONY: build release test check deb install uninstall clean
 
 build:
 	cargo build
@@ -18,6 +18,10 @@ test:
 # unit tests plus end-to-end checks of the release binary in a real pty
 check: test release
 	python3 tests/pty_smoke.py $(TARGET_DIR)/release/$(BIN)
+
+# Ubuntu/Debian package in dist/
+deb:
+	packaging/build-deb.sh
 
 install: release
 	$(SUDO) install -Dm755 $(TARGET_DIR)/release/$(BIN) $(PREFIX)/$(BIN)

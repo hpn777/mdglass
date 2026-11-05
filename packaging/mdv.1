@@ -1,0 +1,75 @@
+.TH MDV 1 "November 2026" "mdv 0.1.0" "User Commands"
+.SH NAME
+mdv \- super fast terminal markdown viewer
+.SH SYNOPSIS
+.B mdv
+[\fIOPTIONS\fR] \fIFILE\fR...
+.br
+.B mdv
+[\fIOPTIONS\fR] \fB\-\fR
+.SH DESCRIPTION
+.B mdv
+renders markdown with colors, tables, syntax-highlighted code and clickable
+links, and shows it in a built-in less-style pager. When standard output is
+not a terminal it prints plain text wrapped to 80 columns instead. With no
+\fIFILE\fR, or when \fIFILE\fR is \fB\-\fR, it reads standard input.
+.SH OPTIONS
+.TP
+.BR \-n ", " \-\-no\-pager
+Print the rendered output to standard output instead of opening the pager.
+.TP
+.BR \-c ", " \-\-plain
+Disable colors. This is the default when standard output is not a terminal.
+.TP
+.B \-\-color
+Force colors, for example \fBmdv \-n \-\-color FILE | less \-R\fR.
+.TP
+.B \-\-no\-urls
+Do not show link URLs after the link text.
+.TP
+.BR \-h ", " \-\-help
+Print help and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH KEYS
+.TP
+.BR j " " k ", " Down " " Up ", " Enter
+Scroll one line down / up.
+.TP
+.BR d " " u ", " Ctrl\-D " " Ctrl\-U
+Scroll half a page down / up.
+.TP
+.BR f " " b ", " Space ", " PgDn " " PgUp
+Scroll a page down / up.
+.TP
+.BR gg " " G ", " Home " " End
+Go to the top / bottom.
+.TP
+.BR / " " ?
+Search forward / backward (case-insensitive).
+.TP
+.BR n " " N
+Go to the next / previous match.
+.TP
+.BR ] " " [
+Show the next / previous file.
+.TP
+.BR q ", " Esc
+Quit, or move on to the next file when several were given.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+When set, colors are disabled unless \fB\-\-color\fR is given.
+.TP
+.B TERM
+When \fBdumb\fR, colors are disabled unless \fB\-\-color\fR is given.
+.SH EXIT STATUS
+0 on success, 1 if a file could not be read, 2 on usage errors.
+.SH EXAMPLES
+.nf
+mdv README.md
+mdv a.md b.md
+curl \-s https://example.com/notes.md | mdv
+mdv notes.md | grep TODO
+.fi
