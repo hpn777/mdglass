@@ -7,7 +7,6 @@
 // native GUI back end (`gui.rs`).
 
 use crate::ansi::{sg, truncate_to, visible_width, wrap, wrap_indent, RESET};
-use crate::doc::inline_spans;
 
 pub use crate::doc::{parse, spans_plain, table_text, Align, Cfg, Line, Role, Span, Style, Table, TableRow};
 
@@ -91,7 +90,7 @@ fn spans_ansi(spans: &[Span], cfg: &Cfg, base: &str) -> String {
 /// Render inline markdown to a styled string (single logical line).
 #[cfg(test)]
 pub fn inline(src: &str, cfg: &Cfg) -> String {
-    spans_ansi(&inline_spans(src, cfg), cfg, "")
+    spans_ansi(&crate::doc::inline_spans(src, cfg), cfg, "")
 }
 
 // ----------------------------------------------------------- block ANSI ---

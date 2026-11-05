@@ -2,6 +2,7 @@
 
 mod ansi;
 mod doc;
+mod gui;
 mod pager;
 mod render;
 
@@ -18,6 +19,7 @@ USAGE:
 
 OPTIONS:
     -n, --no-pager    print rendered output to stdout (no interactive pager)
+    -g, --gui         open a native GNOME preview window (GTK4 + libadwaita)
     -c, --plain       no colors (default when stdout is not a terminal)
         --color       force colors, e.g. `mdv -n --color FILE | less -R`
         --no-urls     don't show link URLs next to link text
@@ -38,6 +40,7 @@ KEYS:
 fn main() {
     let mut paths: Vec<String> = Vec::new();
     let mut no_pager = false;
+    let mut gui = false;
     let mut forced_color: Option<bool> = None;
     let mut urls = true;
 
@@ -54,6 +57,7 @@ fn main() {
                 return;
             }
             "-n" | "--no-pager" => no_pager = true,
+            "-g" | "--gui" => gui = true,
             "-c" | "--plain" | "--no-color" => forced_color = Some(false),
             "--color" => forced_color = Some(true),
             "--no-urls" => urls = false,
@@ -99,6 +103,16 @@ fn main() {
         std::process::exit(if failed { 1 } else { 2 });
     }
 
+    if gui {
+        let stdin_content = files.iter().find(|(n, _)| n == "-").map(|(_, c)| c.clone());
+        let paths: Vec<String> =
+            files.iter().filter(|(n, _)| n != "-").map(|(n, _)| n.clone()).collect();
+        if let Err(e) = gui::run(paths, stdin_content) {
+            eprintln!("mdv: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if no_pager || !stdout_tty {
         print_plain(&files, color, urls);
     } else if let Err(e) = pager::run(&files, color, urls) {
