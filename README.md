@@ -11,14 +11,19 @@ A fast, tiny Markdown viewer for Linux, for the terminal and the GNOME desktop.
 
 ## Install
 
-On Ubuntu 22.04 or newer:
+Download from the [latest release](https://github.com/hpn777/mdglass/releases/latest):
+
+```bash
+sudo apt install ./mdglass_0.1.0-3_amd64.deb            # Ubuntu 22.04+ / Debian
+flatpak install --user ./mdglass-0.1.0-x86_64.flatpak   # any distro (GNOME window)
+```
+
+Or from source:
 
 ```bash
 git clone https://github.com/hpn777/mdglass && cd mdglass
 ./install.sh --with-desktop     # adds "MD Glass" to the app grid and "Open With"
 ```
-
-Or build a `.deb` with `make deb` and install it with `sudo apt install ./dist/mdglass_*.deb`.
 
 ## Usage
 
