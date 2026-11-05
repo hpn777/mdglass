@@ -2,12 +2,12 @@
 # Build an Ubuntu/Debian package: dist/mdglass_<version>-<rev>_<arch>.deb
 # Needs only dpkg-dev tools (dpkg-deb, dpkg-shlibdeps) and cargo.
 #   MAINTAINER="Name <email>"  override the Maintainer field
-#   DEB_REVISION=2             package revision (default 1)
+#   DEB_REVISION=N             package revision (default: from debian/changelog)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
-REVISION="${DEB_REVISION:-1}"
+REVISION="${DEB_REVISION:-$(dpkg-parsechangelog -S Version | sed 's/.*-//')}"
 ARCH="$(dpkg --print-architecture)"
 MAINTAINER="${MAINTAINER:-Rafal Okninski <hpn777@gmail.com>}"
 PKG="mdglass_${VERSION}-${REVISION}_${ARCH}"
