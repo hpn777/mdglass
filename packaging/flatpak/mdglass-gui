@@ -1,0 +1,4 @@
+#!/bin/sh
+# Flatpak entry point: `flatpak run io.github.hpn777.MdGlass [FILE]` opens the
+# GNOME window; the terminal viewer is `--command=mdglass`.
+exec mdglass --gui "$@"

@@ -1,0 +1,26 @@
+name: Flatpak
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+        with:
+          bundle: mdglass.flatpak
+          manifest-path: packaging/flatpak/io.github.hpn777.MdGlass.json
+          cache-key: flatpak-builder-${{ github.sha }}
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Flathub linter (manifest and metainfo)
+        run: |
+          lint="docker run --rm -v $PWD:/w -w /w ghcr.io/flathub/flatpak-builder-lint:latest"
+          $lint manifest packaging/flatpak/io.github.hpn777.MdGlass.json
+          $lint appstream packaging/io.github.hpn777.MdGlass.metainfo.xml

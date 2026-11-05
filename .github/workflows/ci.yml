@@ -1,0 +1,29 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    # same toolchain and GNOME stack as Ubuntu 26.04 users and the PPA builds
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - name: Install build and test dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git make cargo rustc dpkg-dev debhelper dbus \
+            python3 python3-gi gir1.2-girepository-3.0 gir1.2-gtk-4.0 gir1.2-adw-1 \
+            libgtk-4-bin libadwaita-1-0 fonts-dejavu-core desktop-file-utils appstream
+      - uses: actions/checkout@v4
+      - name: make check (unit, pty, GUI ABI audit, scripted GUI session)
+        run: dbus-run-session -- make check
+      - name: Validate desktop entries and metainfo
+        run: |
+          desktop-file-validate packaging/*.desktop
+          appstreamcli validate --no-net packaging/io.github.hpn777.MdGlass.metainfo.xml
+      - name: Build the .deb
+        run: make deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb

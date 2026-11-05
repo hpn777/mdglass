@@ -1,0 +1,47 @@
+[
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/libc/libc-0.2.191.crate",
+        "sha256": "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a",
+        "dest": "cargo/vendor/libc-0.2.191"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a\", \"files\": {}}",
+        "dest": "cargo/vendor/libc-0.2.191",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/numtoa/numtoa-0.2.4.crate",
+        "sha256": "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f",
+        "dest": "cargo/vendor/numtoa-0.2.4"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f\", \"files\": {}}",
+        "dest": "cargo/vendor/numtoa-0.2.4",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "archive",
+        "archive-type": "tar-gzip",
+        "url": "https://static.crates.io/crates/termion/termion-4.0.6.crate",
+        "sha256": "f44138a9ae08f0f502f24104d82517ef4da7330c35acd638f1f29d3cd5475ecb",
+        "dest": "cargo/vendor/termion-4.0.6"
+    },
+    {
+        "type": "inline",
+        "contents": "{\"package\": \"f44138a9ae08f0f502f24104d82517ef4da7330c35acd638f1f29d3cd5475ecb\", \"files\": {}}",
+        "dest": "cargo/vendor/termion-4.0.6",
+        "dest-filename": ".cargo-checksum.json"
+    },
+    {
+        "type": "inline",
+        "contents": "[source.vendored-sources]\ndirectory = \"cargo/vendor\"\n\n[source.crates-io]\nreplace-with = \"vendored-sources\"\n",
+        "dest": "cargo",
+        "dest-filename": "config"
+    }
+]
