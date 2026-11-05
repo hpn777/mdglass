@@ -72,6 +72,27 @@ pub fn char_width(c: char) -> usize {
     }
 }
 
+/// Byte ranges of maximal runs of double-width characters (CJK, emoji):
+/// these runs are the ones whose pixel advance cannot be trusted, because
+/// a fallback font rarely hits exactly 2x the mono advance.
+#[allow(dead_code)] // consumed by the Phase 3 per-run letter-spacing fit
+pub fn wide_runs(s: &str) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    for (b, c) in s.char_indices() {
+        if char_width(c) == 2 {
+            match &mut run {
+                Some(r) => r.1 = b + c.len_utf8(),
+                None => run = Some((b, b + c.len_utf8())),
+            }
+        } else if let Some(r) = run.take() {
+            out.push(r); // any other char (even a zero-width one) breaks a run
+        }
+    }
+    out.extend(run);
+    out
+}
+
 /// Copy one escape sequence starting at `i` into `out`. Returns the SGR params
 /// when the sequence is a color/style change (`ESC [ ... m`).
 pub fn copy_escape(ch: &[char], i: &mut usize, out: &mut String) -> Option<String> {
@@ -361,4 +382,23 @@ pub fn map_visible(s: &str, mut f: impl FnMut(char, &mut String, usize)) -> Stri
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_runs_are_byte_ranges() {
+        assert_eq!(wide_runs(""), Vec::new());
+        assert_eq!(wide_runs("ab漢c"), vec![(2, 5)]);
+        // 👍 is a 4-byte char; 漢字 merge into one run
+        assert_eq!(wide_runs("👍x漢字"), vec![(0, 4), (5, 11)]);
+    }
+
+    #[test]
+    fn wide_runs_break_on_narrow_and_zero_width() {
+        assert_eq!(wide_runs("жд"), Vec::new()); // Cyrillic is single-width
+        assert_eq!(wide_runs("漢\u{301}漢"), vec![(0, 3), (5, 8)]); // combining mark splits
+    }
 }

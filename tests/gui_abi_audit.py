@@ -13,7 +13,7 @@ except ValueError:
     gi.require_version("GIRepository", "3.0")
 from gi.repository import GIRepository as GIR
 repo = GIR.Repository.get_default() if hasattr(GIR.Repository, "get_default") else GIR.Repository()
-for ns, v in [("Gtk","4.0"),("Adw","1"),("Gio","2.0"),("GLib","2.0"),("GObject","2.0"),("Gdk","4.0"),("Gsk","4.0")]:
+for ns, v in [("Gtk","4.0"),("Adw","1"),("Gio","2.0"),("GLib","2.0"),("GObject","2.0"),("Gdk","4.0"),("Gsk","4.0"),("Pango","1.0")]:
     repo.require(ns, v, 0)
 
 table = {}
@@ -33,8 +33,13 @@ def walk(info):
     if hasattr(info, "get_n_methods"):
         for i in range(info.get_n_methods()):
             add_fn(info.get_method(i))
+    # constructors (g_..._new) are indexed too, so they get arg-count checked
+    # instead of tripping the unknown -> exit 1 path; older GIRepository lacks them
+    if hasattr(info, "get_n_constructors"):
+        for i in range(info.get_n_constructors()):
+            add_fn(info.get_constructor(i))
 
-for ns in ["Gtk","Adw","Gio","GLib","GObject","Gdk","Gsk"]:
+for ns in ["Gtk","Adw","Gio","GLib","GObject","Gdk","Gsk","Pango"]:
     for i in range(repo.get_n_infos(ns)):
         walk(repo.get_info(ns, i))
 

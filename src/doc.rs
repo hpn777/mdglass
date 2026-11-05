@@ -27,7 +27,7 @@ impl Cfg {
 }
 
 /// What a piece of text means, so each back end can pick its own colours.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     None,
     Bullet,
@@ -40,7 +40,7 @@ pub enum Role {
 }
 
 /// Character attributes that combine across nesting (`**_x_**`, links in bold, ...).
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style(u8);
 
 impl Style {
@@ -71,7 +71,7 @@ impl std::ops::BitOrAssign for Style {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Span {
     pub text: String,
     pub style: Style,
@@ -96,6 +96,62 @@ pub fn spans_plain(spans: &[Span]) -> String {
 
 pub fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.text.chars().map(char_width).sum::<usize>()).sum()
+}
+
+/// Truncate styled spans to `w` visible columns; when cutting, append one
+/// `…` span carrying the cut span's style/role (like `ansi::truncate_to`,
+/// whose result this mirrors for escape-free text). A wide char that would
+/// overrun the budget is dropped whole: half a glyph is worse than an
+/// early ellipsis.
+pub fn truncate_spans(spans: &[Span], w: usize) -> Vec<Span> {
+    if spans_width(spans) <= w {
+        return spans.to_vec();
+    }
+    let budget = w.saturating_sub(1); // room for the ellipsis itself
+    let mut out: Vec<Span> = Vec::new();
+    let mut col = 0usize;
+    for s in spans {
+        let mut keep = String::new();
+        for c in s.text.chars() {
+            let cw = char_width(c);
+            if col + cw > budget {
+                if !keep.is_empty() {
+                    out.push(Span { text: keep, style: s.style, role: s.role, url: s.url.clone() });
+                }
+                out.push(Span::with("…", s.style, s.role));
+                return out;
+            }
+            keep.push(c);
+            col += cw;
+        }
+        if !keep.is_empty() {
+            out.push(Span { text: keep, style: s.style, role: s.role, url: s.url.clone() });
+        }
+    }
+    out // unreachable: total > w guarantees a cut, but keep it total
+}
+
+/// The byte range `[from, to)` of the concatenated span texts as styled
+/// spans (pieces keep style/role/url, empty pieces dropped) — used to cut
+/// a pre-wrapped line out of a paragraph at Pango break offsets. Offsets
+/// must fall on char boundaries; ranges beyond the text clamp to it.
+#[allow(dead_code)] // consumed by the Phase 2 pre-wrap emitter
+pub fn spans_slice(spans: &[Span], from: usize, to: usize) -> Vec<Span> {
+    let mut out: Vec<Span> = Vec::new();
+    let mut base = 0usize;
+    for s in spans {
+        let (a, b) = (from.max(base), to.min(base + s.text.len()));
+        if a < b {
+            out.push(Span {
+                text: s.text[a - base..b - base].to_string(),
+                style: s.style,
+                role: s.role,
+                url: s.url.clone(),
+            });
+        }
+        base += s.text.len();
+    }
+    out
 }
 
 /// Apply an outer style to inner spans (bold outside, code inside, ...).
@@ -1008,46 +1064,256 @@ fn table_layout(lines: &[&str], start: usize, cfg: &Cfg) -> (Table, usize) {
     (Table { widths, aligns, rows: out_rows }, used)
 }
 
-/// Lay a table out as plain box-drawn text rows (what the GUI renders).
-pub fn table_text(t: &Table) -> Vec<String> {
+/// One drawn fragment of a laid-out table row, so each back end can frame,
+/// header and cells with different styling.
+#[derive(Debug)]
+pub enum TablePiece {
+    /// Box-drawing text: a border line, or a `│` column separator.
+    Frame(String),
+    /// A cell truncated to its column width. `pad_l`/`pad_r` are the
+    /// space gutters around it (including the one standard space), split
+    /// per column alignment so a back end can paint padding with plain
+    /// styling instead of e.g. an inline-code background.
+    Cell {
+        spans: Vec<Span>,
+        pad_l: usize,
+        pad_r: usize,
+        #[allow(dead_code)] // read by the Phase 1 styled GUI emitter
+        header: bool,
+    },
+}
+
+/// Lay a table out row by row as styled pieces; the single pad/truncate
+/// math shared by the plain (`table_text`) and styled back ends.
+pub fn table_pieces(t: &Table) -> Vec<Vec<TablePiece>> {
     let cols = t.widths.len();
     let border = |l: char, m: char, r: char| -> String {
         let segs: Vec<String> = t.widths.iter().map(|w| "─".repeat(w + 2)).collect();
         format!("{l}{}{r}", segs.join(&m.to_string()))
     };
-    let row_line = |spans: &[Vec<Span>]| -> String {
-        let mut s = String::from("│");
-        for c in 0..cols {
-            let raw = spans
-                .get(c)
-                .map(|sp| spans_plain(sp))
-                .unwrap_or_default();
-            let cell = crate::ansi::truncate_to(&raw, t.widths[c]);
-            let a = t.aligns.get(c).copied().unwrap_or(Align::Left);
-            let extra = t.widths[c].saturating_sub(cell.chars().map(char_width).sum::<usize>());
-            let text = match a {
-                Align::Right => format!("{}{cell}", " ".repeat(extra)),
-                Align::Center => {
-                    format!("{}{cell}{}", " ".repeat(extra / 2), " ".repeat(extra - extra / 2))
-                }
-                Align::Left => format!("{cell}{}", " ".repeat(extra)),
-            };
-            s.push(' ');
-            s.push_str(&text);
-            s.push(' ');
-            s.push('│');
-        }
-        s
-    };
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<Vec<TablePiece>> = Vec::new();
     for row in &t.rows {
-        let line = match row {
-            TableRow::Top => border('╭', '┬', '╮'),
-            TableRow::Sep => border('┝', '┿', '┥'),
-            TableRow::Bottom => border('╰', '┴', '╯'),
-            TableRow::Cells { cells, .. } => row_line(cells),
+        let pieces = match row {
+            TableRow::Top => vec![TablePiece::Frame(border('╭', '┬', '╮'))],
+            TableRow::Sep => vec![TablePiece::Frame(border('┝', '┿', '┥'))],
+            TableRow::Bottom => vec![TablePiece::Frame(border('╰', '┴', '╯'))],
+            TableRow::Cells { header, cells } => {
+                let mut p = vec![TablePiece::Frame("│".to_string())];
+                for c in 0..cols {
+                    let spans = cells
+                        .get(c)
+                        .map(|sp| truncate_spans(sp, t.widths[c]))
+                        .unwrap_or_default();
+                    let extra = t.widths[c].saturating_sub(spans_width(&spans));
+                    let (pad_l, pad_r) = match t.aligns.get(c).copied().unwrap_or(Align::Left) {
+                        Align::Right => (1 + extra, 1),
+                        Align::Center => (1 + extra / 2, 1 + extra - extra / 2),
+                        Align::Left => (1, 1 + extra),
+                    };
+                    p.push(TablePiece::Cell { spans, pad_l, pad_r, header: *header });
+                    p.push(TablePiece::Frame("│".to_string()));
+                }
+                p
+            }
         };
-        out.push(line);
+        out.push(pieces);
     }
     out
+}
+
+/// Lay a table out as plain box-drawn text rows (what the GUI renders).
+/// Rendered from `table_pieces` so both paths share one code path and
+/// cannot drift apart.
+pub fn table_text(t: &Table) -> Vec<String> {
+    table_pieces(t)
+        .into_iter()
+        .map(|row| {
+            let mut s = String::new();
+            for p in row {
+                match p {
+                    TablePiece::Frame(f) => s.push_str(&f),
+                    TablePiece::Cell { spans, pad_l, pad_r, .. } => {
+                        s.push_str(&" ".repeat(pad_l));
+                        s.push_str(&spans_plain(&spans));
+                        s.push_str(&" ".repeat(pad_r));
+                    }
+                }
+            }
+            s
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_spans_fits_untouched() {
+        let spans = vec![Span::with("abc", Style::BOLD, Role::Code)];
+        let cut = truncate_spans(&spans, 10);
+        assert_eq!(spans_plain(&cut), "abc");
+        assert_eq!(cut.len(), 1);
+        assert_eq!(spans_plain(&cut), spans_plain(&spans)); // cloned, no ellipsis
+    }
+
+    #[test]
+    fn truncate_spans_ascii_cut_adds_one_ellipsis() {
+        let cut = truncate_spans(&[Span::new("hello world")], 5);
+        assert_eq!(spans_plain(&cut), "hell…");
+        assert_eq!(cut.iter().filter(|s| s.text == "…").count(), 1);
+        assert_eq!(spans_width(&cut), 5);
+    }
+
+    #[test]
+    fn truncate_spans_cjk_cut_never_exceeds_or_splits() {
+        // budget 3: 漢 fits (2), the next 字 would hit 4 > 3 and is dropped whole
+        let cut = truncate_spans(&[Span::new("漢字漢")], 4);
+        assert_eq!(spans_plain(&cut), "漢…");
+        assert!(spans_width(&cut) <= 4);
+        assert!(spans_plain(&cut).contains('…'));
+    }
+
+    #[test]
+    fn truncate_spans_keeps_style_of_the_cut_span() {
+        let spans = vec![Span::new("ab"), Span::with("cdef", Style::BOLD, Role::Code)];
+        let cut = truncate_spans(&spans, 4);
+        assert_eq!(spans_plain(&cut), "abc…");
+        assert_eq!(spans_width(&cut), 4);
+        assert_eq!(cut[0].style, Style::empty()); // kept prefix of span 0
+        assert_eq!(cut[1].style, Style::BOLD); // kept prefix of span 1
+        assert_eq!(cut[1].role, Role::Code);
+        assert_eq!(cut[2].text, "…");
+        assert_eq!(cut[2].style, Style::BOLD); // ellipsis carries the cut span's style
+        assert_eq!(cut[2].role, Role::Code);
+        assert!(cut[2].url.is_none());
+    }
+
+    fn demo_table() -> Table {
+        Table {
+            widths: vec![5, 7],
+            aligns: vec![Align::Left, Align::Right],
+            rows: vec![
+                TableRow::Top,
+                TableRow::Cells {
+                    header: true,
+                    cells: vec![vec![Span::new("ab")], vec![Span::new("cd")]],
+                },
+                TableRow::Sep,
+                TableRow::Cells {
+                    header: false,
+                    cells: vec![vec![Span::new("hello there")], vec![Span::new("z")]],
+                },
+                TableRow::Bottom,
+            ],
+        }
+    }
+
+    #[test]
+    fn table_pieces_row_shapes() {
+        let rows = table_pieces(&demo_table());
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].len(), 1); // Top: a single border frame
+        match &rows[0][0] {
+            TablePiece::Frame(f) => assert!(f.starts_with('╭') && f.contains('┬')),
+            _ => panic!("Top row must be one Frame"),
+        }
+        // Cells rows: Frame │ (Cell Frame)×cols, and the header flag survives
+        for (ri, header) in [(1usize, true), (3usize, false)] {
+            for (pi, p) in rows[ri].iter().enumerate() {
+                match (pi % 2 == 0, p) {
+                    (true, TablePiece::Frame(f)) => assert_eq!(f, "│", "row {ri} piece {pi}"),
+                    (false, TablePiece::Cell { header: h, .. }) => assert_eq!(*h, header),
+                    _ => panic!("row {ri} piece {pi} has the wrong kind"),
+                }
+            }
+            assert_eq!(rows[ri].len(), 2 * 2 + 1);
+        }
+    }
+
+    #[test]
+    fn table_pieces_pads_per_alignment() {
+        let mut t = demo_table();
+        t.widths = vec![5, 5, 5];
+        t.aligns = vec![Align::Left, Align::Center, Align::Right];
+        let x = vec![Span::new("x")];
+        t.rows = vec![TableRow::Cells { header: false, cells: vec![x.clone(), x.clone(), x] }];
+        let pads: Vec<(usize, usize)> = table_pieces(&t)
+            .remove(0)
+            .iter()
+            .filter_map(|p| match p {
+                TablePiece::Cell { spans, pad_l, pad_r, .. } => {
+                    // gutters + cell always fill the column plus the two standard spaces
+                    assert_eq!(pad_l + pad_r + spans_width(spans), 5 + 2);
+                    Some((*pad_l, *pad_r))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pads, vec![(1, 5), (3, 3), (5, 1)]);
+    }
+
+    #[test]
+    fn table_pieces_truncates_long_cells() {
+        let rows = table_pieces(&demo_table());
+        match &rows[3][1] {
+            TablePiece::Cell { spans, .. } => {
+                assert_eq!(spans_plain(spans), "hell…");
+                assert!(spans_width(spans) <= 5);
+            }
+            _ => panic!("piece 1 of a Cells row must be a Cell"),
+        }
+    }
+
+    #[test]
+    fn table_text_rebuilds_from_pieces() {
+        let t = demo_table();
+        let text = table_text(&t);
+        assert_eq!(text[0], format!("╭{}┬{}╮", "─".repeat(7), "─".repeat(9)));
+        assert!(text[2].starts_with('┝') && text[2].contains('┿'));
+        assert!(text[4].starts_with('╰') && text[4].ends_with('╯'));
+        // golden cell line: pins the shared pad/truncate math byte for byte
+        assert_eq!(text[1], "│ ab    │      cd │");
+        // concatenating pieces must reproduce table_text exactly (this is
+        // what the Phase 1 GUI emitter will do instead of pushing strings)
+        for (pieces, line) in table_pieces(&t).iter().zip(&text) {
+            let mut s = String::new();
+            for p in pieces {
+                match p {
+                    TablePiece::Frame(f) => s.push_str(f),
+                    TablePiece::Cell { spans, pad_l, pad_r, .. } => {
+                        s.push_str(&" ".repeat(*pad_l));
+                        s.push_str(&spans_plain(spans));
+                        s.push_str(&" ".repeat(*pad_r));
+                    }
+                }
+            }
+            assert_eq!(&s, line);
+        }
+    }
+
+    #[test]
+    fn spans_slice_cuts_stay_styled() {
+        let spans = vec![
+            Span::with("hello", Style::BOLD, Role::None),
+            Span::with(" world", Style::empty(), Role::Code),
+        ];
+        let mid = spans_slice(&spans, 1, 4); // inside one span
+        assert_eq!(spans_plain(&mid), "ell");
+        assert_eq!(mid[0].style, Style::BOLD);
+        let cross = spans_slice(&spans, 3, 8); // across the style boundary
+        assert_eq!(spans_plain(&cross), "lo wo");
+        assert_eq!(cross.len(), 2);
+        assert_eq!(cross[0].style, Style::BOLD);
+        assert_eq!(cross[1].role, Role::Code);
+    }
+
+    #[test]
+    fn spans_slice_clamps_and_empties() {
+        let spans = vec![Span::new("abc"), Span::new("def")];
+        assert_eq!(spans_plain(&spans_slice(&spans, 0, 100)), "abcdef");
+        assert!(spans_slice(&spans, 9, 12).is_empty()); // past the end
+        assert!(spans_slice(&spans, 4, 4).is_empty()); // empty range
+        assert!(spans_slice(&spans, 4, 2).is_empty()); // inverted range
+    }
 }
