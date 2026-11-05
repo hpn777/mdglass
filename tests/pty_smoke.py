@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end checks of the mdv binary in a real pseudo-terminal.
+"""End-to-end checks of the mdglass binary in a real pseudo-terminal.
 
-Usage: tests/pty_smoke.py PATH_TO_MDV     (run by `make check`)
+Usage: tests/pty_smoke.py PATH_TO_MDGLASS     (run by `make check`)
 """
 import os, pty, re, select, struct, subprocess, sys, tempfile, time, fcntl, termios
 
-MDV = sys.argv[1]
+MDGLASS = sys.argv[1]
 failures = []
 
 
@@ -16,10 +16,10 @@ def check(name, ok, detail=""):
 
 
 def run_pty(args, keys, cols=60, rows=12, timeout=5.0):
-    """Run mdv in a pty, type `keys` one chunk at a time; return (output, exited)."""
+    """Run mdglass in a pty, type `keys` one chunk at a time; return (output, exited)."""
     pid, fd = pty.fork()
     if pid == 0:
-        os.execv(MDV, [MDV] + args)
+        os.execv(MDGLASS, [MDGLASS] + args)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     out = b""
 
@@ -87,14 +87,14 @@ out, exited = run_pty([targets], [b"\x1b"])
 check("bare Esc quits", exited)
 
 wide_table = "| a | b |\n|---|---|\n| " + "word " * 30 + " | " + "x" * 90 + " |\n"
-piped = subprocess.run([MDV, doc("h.md", "# hi\n\n[x](https://x.io)\n\n" + wide_table)], capture_output=True).stdout
+piped = subprocess.run([MDGLASS, doc("h.md", "# hi\n\n[x](https://x.io)\n\n" + wide_table)], capture_output=True).stdout
 check("piped output has no escape codes", b"\x1b" not in piped, piped[:60])
-forced = subprocess.run([MDV, "-n", "--color", os.path.join(tmp, "h.md")], capture_output=True).stdout
+forced = subprocess.run([MDGLASS, "-n", "--color", os.path.join(tmp, "h.md")], capture_output=True).stdout
 check("--color forces colors when piped", b"\x1b[" in forced)
 
 latin1 = os.path.join(tmp, "latin1.md")
 open(latin1, "wb").write(b"caf\xe9\n")
-r = subprocess.run([MDV, latin1], capture_output=True)
+r = subprocess.run([MDGLASS, latin1], capture_output=True)
 check("non-UTF-8 input is shown, not rejected", r.returncode == 0 and "caf\ufffd" in r.stdout.decode(), r.stderr)
 
 print(f"\n{len(failures)} failed" if failures else "\nall pty checks passed")

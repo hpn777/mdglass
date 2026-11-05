@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
-"""End-to-end checks of `mdv --gui` in a real GTK4/libadwaita window, without
+"""End-to-end checks of `mdglass --gui` in a real GTK4/libadwaita window, without
 a monitor: the window runs on a private Broadway display and is driven by the
-MDV_GUI_SCRIPT test hook (actions, find, Escape, screenshots via GTK's own
+MDGLASS_GUI_SCRIPT test hook (actions, find, Escape, screenshots via GTK's own
 renderer). Fails on any GTK warning/critical, crash, or wrong find count.
-usage: gui_smoke.py path/to/mdv   (skips with exit 0 if gtk4-broadwayd is absent)"""
+usage: gui_smoke.py path/to/mdglass   (skips with exit 0 if gtk4-broadwayd is absent)"""
 import os, shutil, subprocess, sys, tempfile, threading, time
 
-MDV = os.path.abspath(sys.argv[1])
+MDGLASS = os.path.abspath(sys.argv[1])
 if not shutil.which("gtk4-broadwayd"):
     print("skip gui checks: gtk4-broadwayd not installed")
     sys.exit(0)
 
 DISPLAY = ":31"
-work = tempfile.mkdtemp(prefix="mdv-gui-")
+work = tempfile.mkdtemp(prefix="mdglass-gui-")
 broadway = subprocess.Popen(["gtk4-broadwayd", DISPLAY], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(0.8)
 failures = 0
 
 def run(args, script, stdin=None, timeout=40):
     env = dict(os.environ, GDK_BACKEND="broadway", BROADWAY_DISPLAY=DISPLAY,
-               MDV_GUI_SCRIPT=script,
+               MDGLASS_GUI_SCRIPT=script,
                # portals of the host session are not needed and may be slow
                ADW_DISABLE_PORTAL="1", GDK_DEBUG="no-portals")
-    p = subprocess.run([MDV, "--gui", *args], env=env, input=stdin, capture_output=True,
+    p = subprocess.run([MDGLASS, "--gui", *args], env=env, input=stdin, capture_output=True,
                        timeout=timeout, cwd=work)
     return p.returncode, p.stderr.decode(errors="replace")
 

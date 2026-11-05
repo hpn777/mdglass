@@ -1,4 +1,4 @@
-// mdv - super fast terminal markdown viewer.
+// mdglass - super fast terminal markdown viewer.
 
 mod ansi;
 mod doc;
@@ -11,17 +11,17 @@ use std::io::{self, Read, Write};
 use render::{render, Cfg};
 
 const HELP: &str = "\
-mdv - super fast terminal markdown viewer
+mdglass - super fast terminal markdown viewer
 
 USAGE:
-    mdv [OPTIONS] FILE...
-    cat README.md | mdv -
+    mdglass [OPTIONS] FILE...
+    cat README.md | mdglass -
 
 OPTIONS:
     -n, --no-pager    print rendered output to stdout (no interactive pager)
     -g, --gui         open a native GNOME preview window (GTK4 + libadwaita)
     -c, --plain       no colors (default when stdout is not a terminal)
-        --color       force colors, e.g. `mdv -n --color FILE | less -R`
+        --color       force colors, e.g. `mdglass -n --color FILE | less -R`
         --no-urls     don't show link URLs next to link text
     -h, --help        print this help
     -V, --version     print version
@@ -53,7 +53,7 @@ fn main() {
                 return;
             }
             "-V" | "--version" => {
-                println!("mdv {}", env!("CARGO_PKG_VERSION"));
+                println!("mdglass {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
             "-n" | "--no-pager" => no_pager = true,
@@ -63,7 +63,7 @@ fn main() {
             "--no-urls" => urls = false,
             "-" => paths.push("-".into()),
             _ if a.starts_with('-') && a.len() > 1 => {
-                eprintln!("mdv: unknown option {a} (try --help)");
+                eprintln!("mdglass: unknown option {a} (try --help)");
                 std::process::exit(2);
             }
             _ => paths.push(a),
@@ -75,7 +75,7 @@ fn main() {
     if paths.is_empty() && gui && !stdin_piped {
         // launched from the app grid or with no argument: empty window with Open…
         if let Err(e) = gui::run(Vec::new(), None) {
-            eprintln!("mdv: {e}");
+            eprintln!("mdglass: {e}");
             std::process::exit(1);
         }
         return;
@@ -102,7 +102,7 @@ fn main() {
             // invalid UTF-8 (e.g. Latin-1 files) is shown with replacement chars
             Ok(b) => files.push((path.clone(), String::from_utf8_lossy(&b).into_owned())),
             Err(e) => {
-                eprintln!("mdv: {}: {e}", if path == "-" { "stdin" } else { path });
+                eprintln!("mdglass: {}: {e}", if path == "-" { "stdin" } else { path });
                 failed = true;
             }
         }
@@ -120,7 +120,7 @@ fn main() {
         let paths: Vec<String> =
             files.iter().filter(|(n, _)| n != "-").map(|(n, _)| n.clone()).collect();
         if let Err(e) = gui::run(paths, stdin_content) {
-            eprintln!("mdv: {e}");
+            eprintln!("mdglass: {e}");
             std::process::exit(1);
         }
         return;
@@ -129,7 +129,7 @@ fn main() {
         print_plain(&files, color, urls);
     } else if let Err(e) = pager::run(&files, color, urls) {
         // No usable terminal for raw mode: fall back to a plain dump.
-        eprintln!("mdv: pager unavailable ({e}), printing instead");
+        eprintln!("mdglass: pager unavailable ({e}), printing instead");
         print_plain(&files, color, urls);
     }
     if failed {

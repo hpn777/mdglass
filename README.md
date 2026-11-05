@@ -1,4 +1,4 @@
-# mdv
+# mdglass
 
 A super fast terminal markdown viewer in Rust.
 
@@ -9,7 +9,7 @@ A super fast terminal markdown viewer in Rust.
   process start included.
 - Built-in less-style pager on the alternate screen: scrolling, search with match
   highlighting, multi-file browsing, re-wraps on resize.
-- And a native GNOME preview: `mdv --gui` shows the same document in a GTK4 +
+- And a native GNOME preview: `mdglass --gui` shows the same document in a GTK4 +
   libadwaita window with find, zoom and live reload. The system's GNOME
   libraries are resolved at runtime with `dlopen` — no WebKit, nothing extra
   to install, still one small binary (~0.6 MB).
@@ -20,7 +20,7 @@ Run as your normal user; the script asks for sudo only for the copy step.
 
 ```bash
 ./install.sh                        # build and install to /usr/local/bin
-./install.sh --with-desktop         # also add mdv to the file manager's "Open With"
+./install.sh --with-desktop         # also add mdglass to the file manager's "Open With"
 PREFIX=~/.local/bin ./install.sh    # per-user install, no sudo
 ./install.sh --uninstall
 ```
@@ -31,13 +31,13 @@ If `cargo` is missing, the installer sets up rustup (minimal profile), plus
 ## Usage
 
 ```bash
-mdv README.md                  # interactive pager
-mdv a.md b.md c.md             # several files; ] and [ switch between them
-cat notes.md | mdv -           # from stdin
-mdv big.md | grep TODO         # piped: plain text, wrapped to 80 columns
-mdv -n --color big.md | less -R  # keep colors when piping
-mdv -c file.md                 # no colors (also honors NO_COLOR and TERM=dumb)
-mdv --no-urls file.md          # hide the " (url)" after links
+mdglass README.md                    # interactive pager
+mdglass a.md b.md c.md               # several files; ] and [ switch between them
+cat notes.md | mdglass -             # from stdin
+mdglass big.md | grep TODO           # piped: plain text, wrapped to 80 columns
+mdglass -n --color big.md | less -R  # keep colors when piping
+mdglass -c file.md                   # no colors (also honors NO_COLOR and TERM=dumb)
+mdglass --no-urls file.md            # hide the " (url)" after links
 ```
 
 ## Keys
@@ -56,10 +56,10 @@ mdv --no-urls file.md          # hide the " (url)" after links
 ## GNOME preview
 
 ```bash
-mdv --gui README.md          # preview window; file managers get an "Open With" entry
+mdglass --gui README.md          # preview window; file managers get an "Open With" entry
 ```
 
-`mdv --gui` shares the exact parser with the terminal back end and draws into
+`mdglass --gui` shares the exact parser with the terminal back end and draws into
 native widgets (no WebKit, no terminal emulation): a header bar with document
 title, a hamburger menu, and a styled document view.
 

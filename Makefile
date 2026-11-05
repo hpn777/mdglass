@@ -1,4 +1,4 @@
-BIN     := mdv
+BIN     := mdglass
 PREFIX  ?= /usr/local/bin
 SUDO    ?= sudo
 

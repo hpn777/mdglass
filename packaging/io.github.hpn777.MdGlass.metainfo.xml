@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.hpn777.MdGlass</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>MD Glass</name>
+  <summary>Fast, compact Markdown viewer</summary>
+  <developer id="io.github.hpn777">
+    <name>Rafal Okninski</name>
+  </developer>
+  <description>
+    <p>
+      MD Glass shows Markdown documents in a native GNOME window: headings,
+      lists, task lists, block quotes, tables and highlighted code blocks.
+    </p>
+    <ul>
+      <li>Find in document with match count</li>
+      <li>Zoom, and several files open at once</li>
+      <li>Live reload when the file changes on disk</li>
+      <li>A terminal pager mode with the same renderer</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.hpn777.MdGlass.desktop</launchable>
+  <url type="homepage">https://github.com/hpn777/mdglass</url>
+  <url type="bugtracker">https://github.com/hpn777/mdglass/issues</url>
+  <url type="vcs-browser">https://github.com/hpn777/mdglass</url>
+  <provides>
+    <binary>mdglass</binary>
+    <mediatype>text/markdown</mediatype>
+  </provides>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>markdown</keyword>
+    <keyword>viewer</keyword>
+    <keyword>preview</keyword>
+  </keywords>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A README rendered in the GNOME window</caption>
+      <image>https://raw.githubusercontent.com/hpn777/mdglass/main/packaging/screenshots/main.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Find in document</caption>
+      <image>https://raw.githubusercontent.com/hpn777/mdglass/main/packaging/screenshots/find.png</image>
+    </screenshot>
+  </screenshots>
+  <branding>
+    <color type="primary" scheme_preference="light">#99c1f1</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <releases>
+    <release version="0.1.0" date="2026-11-05">
+      <description>
+        <p>First release, renamed from mdv.</p>
+      </description>
+    </release>
+  </releases>
+</component>

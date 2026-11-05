@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# mdv installer for Ubuntu. Run as your normal user; sudo is used only for
+# mdglass installer for Ubuntu. Run as your normal user; sudo is used only for
 # the copy steps that need it.
-#   ./install.sh                 build + install mdv to /usr/local/bin
+#   ./install.sh                 build + install mdglass to /usr/local/bin
 #   ./install.sh --with-desktop  also add the GNOME viewer + terminal entries
 #                                to the file manager's "Open With" menus
 #   ./install.sh --uninstall     remove the binary and desktop entry
 #   PREFIX=~/.local/bin ./install.sh   install without sudo
 set -euo pipefail
 
-BIN_NAME=mdv
+BIN_NAME=mdglass
 PREFIX="${PREFIX:-/usr/local/bin}"
 ACTION=install
 DESKTOP=0
@@ -17,13 +17,13 @@ for arg in "$@"; do
         --with-desktop) DESKTOP=1 ;;
         --uninstall) ACTION=uninstall ;;
         -h|--help) sed -n '2,7s/^# \{0,1\}//p' "$0"; exit 0 ;;
-        *) echo "mdv: unknown option $arg (try --help)" >&2; exit 2 ;;
+        *) echo "mdglass: unknown option $arg (try --help)" >&2; exit 2 ;;
     esac
 done
 cd "$(dirname "$0")"
 
 if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-    echo "mdv: run ./install.sh without sudo; it asks for sudo only when installing." >&2
+    echo "mdglass: run ./install.sh without sudo; it asks for sudo only when installing." >&2
     exit 1
 fi
 
@@ -36,7 +36,7 @@ sudo_for() {
     elif command -v sudo >/dev/null 2>&1; then
         echo "sudo"
     else
-        echo "mdv: $1 is not writable and sudo is unavailable; try PREFIX=\$HOME/.local/bin" >&2
+        echo "mdglass: $1 is not writable and sudo is unavailable; try PREFIX=\$HOME/.local/bin" >&2
         exit 1
     fi
 }
@@ -47,16 +47,16 @@ case "$PREFIX" in
     "$HOME"/*) APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications" ;;
     *) APPS_DIR=/usr/share/applications ;;
 esac
-DESKTOP_FILE="$APPS_DIR/mdv.desktop"
+DESKTOP_FILE="$APPS_DIR/io.github.hpn777.MdGlass.desktop"
 
 ICON_DIR="$(dirname "$APPS_DIR")/icons/hicolor"
-ICON_FILE="$ICON_DIR/scalable/apps/mdv.svg"
+ICON_FILE="$ICON_DIR/scalable/apps/io.github.hpn777.MdGlass.svg"
 
 if [ "$ACTION" = uninstall ]; then
     $(sudo_for "$PREFIX") rm -f "$PREFIX/$BIN_NAME"
-    $(sudo_for "$APPS_DIR") rm -f "$DESKTOP_FILE" "${APPS_DIR}/mdv-terminal.desktop"
+    $(sudo_for "$APPS_DIR") rm -f "$DESKTOP_FILE" "${APPS_DIR}/mdglass-terminal.desktop"
     [ -e "$ICON_FILE" ] && $(sudo_for "$ICON_DIR") rm -f "$ICON_FILE"
-    echo ">> mdv uninstalled."
+    echo ">> mdglass uninstalled."
     exit 0
 fi
 
@@ -79,11 +79,11 @@ if ! command -v cc >/dev/null 2>&1; then
 fi
 
 # 2. Build release binary
-echo ">> Building mdv (release)..."
+echo ">> Building mdglass (release)..."
 cargo build --release --locked
 TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' | head -1)"
 BIN="$TARGET_DIR/release/$BIN_NAME"
-[ -f "$BIN" ] || { echo "mdv: build produced no binary at $BIN" >&2; exit 1; }
+[ -f "$BIN" ] || { echo "mdglass: build produced no binary at $BIN" >&2; exit 1; }
 
 # 3. Install
 $(sudo_for "$PREFIX") install -Dm755 "$BIN" "$PREFIX/$BIN_NAME"
@@ -99,31 +99,31 @@ esac
 if [ "$DESKTOP" = 1 ]; then
     gui="[Desktop Entry]
 Type=Application
-Name=mdv
+Name=MD Glass
 GenericName=Markdown Viewer
 Comment=View Markdown documents with a native GNOME preview
 Exec=$PREFIX/$BIN_NAME --gui %f
-Icon=mdv
+Icon=io.github.hpn777.MdGlass
 Terminal=false
 Categories=Utility;TextEditor;
 Keywords=markdown;viewer;preview;
 MimeType=text/markdown;text/x-markdown;
-StartupWMClass=org.mdv.Viewer"
+StartupWMClass=io.github.hpn777.MdGlass"
     term="[Desktop Entry]
 Type=Application
-Name=mdv (terminal)
+Name=MD Glass (terminal)
 Comment=Terminal markdown viewer with pager
 Exec=x-terminal-emulator -e $PREFIX/$BIN_NAME %f
-Icon=mdv
+Icon=io.github.hpn777.MdGlass
 Terminal=false
 NoDisplay=true
 MimeType=text/markdown;text/x-markdown;"
     printf '%s\n' "$gui" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "$DESKTOP_FILE"
-    printf '%s\n' "$term" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "${APPS_DIR}/mdv-terminal.desktop"
-    $(sudo_for "$ICON_DIR") install -Dm644 packaging/mdv.svg "$ICON_FILE"
+    printf '%s\n' "$term" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "${APPS_DIR}/mdglass-terminal.desktop"
+    $(sudo_for "$ICON_DIR") install -Dm644 packaging/io.github.hpn777.MdGlass.svg "$ICON_FILE"
     command -v update-desktop-database >/dev/null 2>&1 && $(sudo_for "$APPS_DIR") update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
     command -v gtk-update-icon-cache >/dev/null 2>&1 && $(sudo_for "$ICON_DIR") gtk-update-icon-cache -qf "$ICON_DIR" >/dev/null 2>&1 || true
     echo ">> Added desktop entries and icon ($APPS_DIR)"
 fi
 
-echo ">> Done. Try: mdv README.md"
+echo ">> Done. Try: mdglass README.md"

@@ -1,14 +1,14 @@
-.TH MDV 1 "November 2026" "mdv 0.1.0" "User Commands"
+.TH MDGLASS 1 "November 2026" "mdglass 0.1.0" "User Commands"
 .SH NAME
-mdv \- super fast terminal markdown viewer
+mdglass \- super fast terminal markdown viewer
 .SH SYNOPSIS
-.B mdv
+.B mdglass
 [\fIOPTIONS\fR] \fIFILE\fR...
 .br
-.B mdv
+.B mdglass
 [\fIOPTIONS\fR] \fB\-\fR
 .SH DESCRIPTION
-.B mdv
+.B mdglass
 renders markdown with colors, tables, syntax-highlighted code and clickable
 links, and shows it in a built-in less-style pager. When standard output is
 not a terminal it prints plain text wrapped to 80 columns instead. With no
@@ -27,7 +27,7 @@ Print the rendered output to standard output instead of opening the pager.
 Disable colors. This is the default when standard output is not a terminal.
 .TP
 .B \-\-color
-Force colors, for example \fBmdv \-n \-\-color FILE | less \-R\fR.
+Force colors, for example \fBmdglass \-n \-\-color FILE | less \-R\fR.
 .TP
 .B \-\-no\-urls
 Do not show link URLs after the link text.
@@ -90,9 +90,9 @@ When \fBdumb\fR, colors are disabled unless \fB\-\-color\fR is given.
 2 on usage errors.
 .SH EXAMPLES
 .nf
-mdv README.md
-mdv a.md b.md
-curl \-s https://example.com/notes.md | mdv
-mdv notes.md | grep TODO
-mdv --gui README.md          # native GNOME preview window
+mdglass README.md
+mdglass a.md b.md
+curl \-s https://example.com/notes.md | mdglass
+mdglass notes.md | grep TODO
+mdglass --gui README.md          # native GNOME preview window
 .fi

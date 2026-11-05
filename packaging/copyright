@@ -1,9 +1,9 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: mdv
-Source: https://example.invalid/mdv
+Upstream-Name: mdglass
+Source: https://github.com/hpn777/mdglass
 
 Files: *
-Copyright: 2026 mdv contributors
+Copyright: 2026 mdglass contributors
 License: MIT
 
 License: MIT

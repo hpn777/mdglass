@@ -679,7 +679,7 @@ unsafe fn load_current() {
         None => match current_path() {
             Some(p) => match std::fs::read(&p) {
                 Ok(b) => String::from_utf8_lossy(&b).into_owned(),
-                Err(e) => format!("mdv: cannot read {p}: {e}"),
+                Err(e) => format!("mdglass: cannot read {p}: {e}"),
             },
             None => String::new(),
         },
@@ -705,7 +705,7 @@ unsafe fn load_current() {
     };
     set_s((*app()).wtitle, "title", &name);
     set_s((*app()).wtitle, "subtitle", &dir);
-    let t = cstr(&format!("mdv - {name}"));
+    let t = cstr(&format!("{name} - MD Glass"));
     (l().gtk_window_set_title)((*app()).win, t.as_ptr());
     if (*app()).status_shown {
         (*app()).status_shown = false;
@@ -801,7 +801,7 @@ unsafe fn hide_findbar() {
 unsafe fn apply_css() {
     let zoom = (*app()).zoom;
     let css = format!(
-        ".mdvview {{ font-size: {:.1}px; }}\n.mdvfind {{ border-top: 1px solid alpha(currentColor, 0.12); }}\n",
+        ".mdglassview {{ font-size: {:.1}px; }}\n.mdglassfind {{ border-top: 1px solid alpha(currentColor, 0.12); }}\n",
         BASE_FONT_PX * zoom
     );
     let c = cstr(&css);
@@ -960,7 +960,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
 
     let toolbar = (l().adw_toolbar_view_new)();
     let header = (l().adw_header_bar_new)();
-    a.wtitle = (l().adw_window_title_new)(c"mdv".as_ptr(), c"".as_ptr());
+    a.wtitle = (l().adw_window_title_new)(c"MD Glass".as_ptr(), c"".as_ptr());
     (l().adw_header_bar_set_title_widget)(header, a.wtitle);
     let menu_btn = (l().gtk_menu_button_new)();
     set_s(menu_btn, "icon-name", "open-menu-symbolic");
@@ -983,7 +983,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     (l().gtk_text_view_set_right_margin)(a.view, 28);
     (l().gtk_text_view_set_top_margin)(a.view, 12);
     (l().gtk_text_view_set_bottom_margin)(a.view, 36);
-    (l().gtk_widget_add_css_class)(a.view, c"mdvview".as_ptr());
+    (l().gtk_widget_add_css_class)(a.view, c"mdglassview".as_ptr());
     a.buffer = (l().gtk_text_view_get_buffer)(a.view);
     make_tags();
     (l().gtk_scrolled_window_set_child)(a.scrolled, a.view);
@@ -1015,7 +1015,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     }
     (l().gtk_window_present)(a.win);
     (l().g_timeout_add_seconds)(2, Some(on_tick), std::ptr::null_mut());
-    if std::env::var_os("MDV_GUI_SCRIPT").is_some() {
+    if std::env::var_os("MDGLASS_GUI_SCRIPT").is_some() {
         (l().g_timeout_add)(700, Some(on_script_step), std::ptr::null_mut());
     }
 }
@@ -1025,7 +1025,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
 unsafe fn build_status_page() -> Ptr {
     let page = (l().adw_status_page_new)();
     (l().adw_status_page_set_title)(page, c"No document".as_ptr());
-    (l().adw_status_page_set_description)(page, c"Open a Markdown file (Ctrl+O), or run mdv --gui FILE".as_ptr());
+    (l().adw_status_page_set_description)(page, c"Open a Markdown file (Ctrl+O), or run mdglass --gui FILE".as_ptr());
     (l().gtk_widget_set_hexpand)(page, 1);
     (l().gtk_widget_set_vexpand)(page, 1);
     let btn = (l().gtk_button_new_with_label)(c"Open…".as_ptr());
@@ -1039,7 +1039,7 @@ unsafe fn build_status_page() -> Ptr {
 
 unsafe fn build_findbar() -> Ptr {
     let bar = (l().gtk_box_new)(0 /* horizontal */, 6);
-    (l().gtk_widget_add_css_class)(bar, c"mdvfind".as_ptr());
+    (l().gtk_widget_add_css_class)(bar, c"mdglassfind".as_ptr());
     (l().gtk_widget_set_margin_start)(bar, 20);
     (l().gtk_widget_set_margin_end)(bar, 20);
     (l().gtk_widget_set_margin_top)(bar, 8);
@@ -1166,7 +1166,7 @@ unsafe fn add_accels() {
 
 
 // ----------------------------------------------------------- test hook ---
-// MDV_GUI_SCRIPT="action:find;find:text;esc;shot:/tmp/a.png;quit" drives the
+// MDGLASS_GUI_SCRIPT="action:find;find:text;esc;shot:/tmp/a.png;quit" drives the
 // real window for end-to-end tests (e.g. under GDK_BACKEND=broadway), one
 // step every 700 ms. Not part of the user interface.
 
@@ -1189,7 +1189,7 @@ unsafe fn snapshot_png(path: &str) -> bool {
     let p = cstr(path);
     let ok = !tex.is_null() && (l().gdk_texture_save_to_png)(tex, p.as_ptr()) != 0;
     eprintln!(
-        "mdv-script: shot {path} {w}x{h} node={} renderer={} texture={} {}",
+        "mdglass-script: shot {path} {w}x{h} node={} renderer={} texture={} {}",
         !node.is_null(), !renderer.is_null(), !tex.is_null(), if ok { "ok" } else { "FAILED" }
     );
     (l().g_object_unref)(paintable);
@@ -1197,13 +1197,13 @@ unsafe fn snapshot_png(path: &str) -> bool {
 }
 
 unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
-    let script = std::env::var("MDV_GUI_SCRIPT").unwrap_or_default();
+    let script = std::env::var("MDGLASS_GUI_SCRIPT").unwrap_or_default();
     let steps: Vec<&str> = script.split(';').filter(|s| !s.is_empty()).collect();
     let pos = SCRIPT_POS;
     SCRIPT_POS += 1;
     let Some(step) = steps.get(pos) else { return 0 };
     let (kind, arg) = step.split_once(':').unwrap_or((step, ""));
-    eprintln!("mdv-script: {step}");
+    eprintln!("mdglass-script: {step}");
     let a = &*app();
     match kind {
         "action" => {
@@ -1214,7 +1214,7 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
             let t = cstr(arg);
             (l().gtk_editable_set_text)(a.entry, t.as_ptr());
             let lbl = CStr::from_ptr((l().gtk_label_get_text)(a.hits)).to_string_lossy().into_owned();
-            eprintln!("mdv-script: hits label = {lbl:?}");
+            eprintln!("mdglass-script: hits label = {lbl:?}");
         }
         "next" => click_find_next(std::ptr::null_mut(), std::ptr::null_mut()),
         "esc" => {
@@ -1232,7 +1232,7 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
             (l().gtk_window_close)(a.win);
             return 0;
         }
-        _ => eprintln!("mdv-script: unknown step {step}"),
+        _ => eprintln!("mdglass-script: unknown step {step}"),
     }
     1
 }
@@ -1249,7 +1249,7 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
     {
         return Err("no GNOME display available (need a Wayland or X11 session)".into());
     }
-    let app = unsafe { (l().adw_application_new)(c"org.mdv.Viewer".as_ptr(), NON_UNIQUE) };
+    let app = unsafe { (l().adw_application_new)(c"io.github.hpn777.MdGlass".as_ptr(), NON_UNIQUE) };
     if app.is_null() {
         return Err("cannot create Adwaita application".into());
     }

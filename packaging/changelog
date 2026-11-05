@@ -1,13 +1,22 @@
-mdv (0.1.0-2) unstable; urgency=medium
+mdglass (0.1.0-3) unstable; urgency=medium
 
-  * mdv --gui: native GNOME preview (GTK4 + libadwaita, loaded at runtime).
+  * Renamed from mdv (that name is taken on crates.io and PyPI); the
+    application ID is now io.github.hpn777.MdGlass.
+  * AppStream metainfo; Recommends the GTK4/libadwaita libraries the GNOME
+    preview loads at runtime.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Thu, 05 Nov 2026 18:30:00 +0000
+
+mdglass (0.1.0-2) unstable; urgency=medium
+
+  * mdglass --gui: native GNOME preview (GTK4 + libadwaita, loaded at runtime).
   * Desktop entry and icon for the preview; the terminal pager remains as a
     hidden "Open With" alternative.
 
- -- hypnos <hypnos@localhost>  Thu, 05 Nov 2026 18:00:00 +0000
+ -- Rafal Okninski <hpn777@gmail.com>  Thu, 05 Nov 2026 18:00:00 +0000
 
-mdv (0.1.0-1) unstable; urgency=medium
+mdglass (0.1.0-1) unstable; urgency=medium
 
   * Initial release.
 
- -- hypnos <hypnos@localhost>  Thu, 05 Nov 2026 12:00:00 +0000
+ -- Rafal Okninski <hpn777@gmail.com>  Thu, 05 Nov 2026 12:00:00 +0000

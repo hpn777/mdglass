@@ -1,10 +1,10 @@
 [package]
-name = "mdv"
+name = "mdglass"
 version = "0.1.0"
 edition = "2021"
 description = "Super fast, minimal terminal markdown viewer"
 license = "MIT"
-repository = "https://example.invalid/mdv"
+repository = "https://github.com/hpn777/mdglass"
 
 [dependencies]
 termion = "4"
