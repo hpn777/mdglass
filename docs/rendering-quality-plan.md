@@ -87,8 +87,12 @@ images, syntax highlighting.
   `WORD_CHAR` wrap, break byte-ranges read from `PangoLayoutLine.offset/
   length`).
 - Resize observation: GTK4 has no `size-allocate` signal and
-  `notify::default-width` does not fire on user resize; use **`notify::width`
-  on the view**, debounce with `g_timeout_add`.
+  `notify::default-width` does not fire on user resize. **Empirical finding:
+  `notify::width` on the view never fired either** (not even the initial
+  0-width -> allocated-width transition under Broadway). The reliable
+  mechanism is polling in the existing style: a 200 ms `g_timeout_add` tick
+  comparing `view_cols()` against the last rendered budget, re-rendering
+  only when the column budget actually changed.
 - Tag color/letter-spacing properties are live: updating an existing tag
   re-renders without re-inserting text. Adwaita dark state:
   `adw_style_manager_get_default()` + `get_dark()`, live via

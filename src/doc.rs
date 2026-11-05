@@ -135,7 +135,6 @@ pub fn truncate_spans(spans: &[Span], w: usize) -> Vec<Span> {
 /// spans (pieces keep style/role/url, empty pieces dropped) — used to cut
 /// a pre-wrapped line out of a paragraph at Pango break offsets. Offsets
 /// must fall on char boundaries; ranges beyond the text clamp to it.
-#[allow(dead_code)] // consumed by the Phase 2 pre-wrap emitter
 pub fn spans_slice(spans: &[Span], from: usize, to: usize) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::new();
     let mut base = 0usize;
