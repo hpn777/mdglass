@@ -11,7 +11,7 @@ use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
 use std::path::Path;
 use std::time::SystemTime;
 
-use crate::doc::{parse, table_text, Cfg, Line, Role, Span, Style};
+use crate::doc::{parse, table_pieces, Cfg, Line, Role, Span, Style, TablePiece};
 
 // ------------------------------------------------------------------ FFI ---
 
@@ -48,7 +48,10 @@ const UNDERLINE_SINGLE: c_int = 1;
 const SEARCH_FLAGS: c_uint = 1 | 2; // TEXT_ONLY | CASE_INSENSITIVE
 const KEY_ESCAPE: c_uint = 0xff1b;
 const BASE_FONT_PX: f64 = 15.0;
-const MONO_ADVANCE: f64 = 0.6; // monospace glyph width in em, for indents
+const MONO_ADVANCE: f64 = 0.6; // fallback em advance, only before the first measure_mono()
+/// Family pinned wherever columns must line up: DejaVu (0.6 em advance,
+/// box drawing), Noto as the CJK fallback, generic monospace as the last resort.
+const MONO_FAMILY: &str = "DejaVu Sans Mono, Noto Sans Mono, Monospace";
 
 fn expect(handle: Ptr, what: &str) -> Result<Ptr, String> {
     if handle.is_null() {
@@ -74,6 +77,7 @@ struct Lib {
     gtk_init_check: unsafe extern "C" fn() -> c_int,
     gtk_window_set_title: unsafe extern "C" fn(Ptr, *const c_char),
     gtk_window_set_default_size: unsafe extern "C" fn(Ptr, c_int, c_int),
+    gtk_window_get_default_size: unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int),
     gtk_window_close: unsafe extern "C" fn(Ptr),
     adw_application_window_set_content: unsafe extern "C" fn(Ptr, Ptr),
     gtk_window_present: unsafe extern "C" fn(Ptr),
@@ -131,6 +135,7 @@ struct Lib {
     gtk_widget_add_controller: unsafe extern "C" fn(Ptr, Ptr) -> c_uint,
     gtk_widget_get_display: unsafe extern "C" fn(Ptr) -> Ptr,
     gtk_widget_set_tooltip_text: unsafe extern "C" fn(Ptr, *const c_char),
+    gtk_widget_create_pango_layout: unsafe extern "C" fn(Ptr, *const c_char) -> Ptr,
     gtk_event_controller_key_new: unsafe extern "C" fn() -> Ptr,
     gtk_event_controller_set_propagation_phase: unsafe extern "C" fn(Ptr, c_int),
     gtk_css_provider_new: unsafe extern "C" fn() -> Ptr,
@@ -154,6 +159,14 @@ struct Lib {
     adw_status_page_set_title: unsafe extern "C" fn(Ptr, *const c_char),
     adw_status_page_set_description: unsafe extern "C" fn(Ptr, *const c_char),
     adw_status_page_set_child: unsafe extern "C" fn(Ptr, Ptr),
+    adw_style_manager_get_default: unsafe extern "C" fn() -> Ptr,
+    adw_style_manager_get_dark: unsafe extern "C" fn(Ptr) -> c_int,
+    pango_layout_set_text: unsafe extern "C" fn(Ptr, *const c_char, c_int),
+    pango_layout_get_size: unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int),
+    pango_layout_set_font_description: unsafe extern "C" fn(Ptr, Ptr),
+    pango_font_description_from_string: unsafe extern "C" fn(*const c_char) -> Ptr,
+    pango_font_description_set_absolute_size: unsafe extern "C" fn(Ptr, f64),
+    pango_font_description_free: unsafe extern "C" fn(Ptr),
     g_object_set: unsafe extern "C" fn(Ptr, *const c_char, ...),
     g_object_unref: unsafe extern "C" fn(Ptr),
     g_object_ref_sink: unsafe extern "C" fn(Ptr) -> Ptr,
@@ -189,6 +202,7 @@ fn load_lib() -> Result<Lib, String> {
         let gobject = expect(dlopen(c"libgobject-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libgobject-2.0")?;
         let gio = expect(dlopen(c"libgio-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libgio-2.0")?;
         let glib = expect(dlopen(c"libglib-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libglib-2.0")?;
+        let pango = expect(dlopen(c"libpango-1.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libpango-1.0")?;
         let mut missing: Vec<String> = Vec::new();
         macro_rules! g {
             ($h:expr, $n:literal, $t:ty) => {
@@ -204,11 +218,13 @@ fn load_lib() -> Result<Lib, String> {
             (go $n:literal, $t:ty) => { g!(gobject, $n, $t) };
             (gio $n:literal, $t:ty) => { g!(gio, $n, $t) };
             (glib $n:literal, $t:ty) => { g!(glib, $n, $t) };
+            (pango $n:literal, $t:ty) => { g!(pango, $n, $t) };
         }
         let lib = Lib {
             gtk_init_check: gs!("gtk_init_check", unsafe extern "C" fn() -> c_int),
             gtk_window_set_title: gs!("gtk_window_set_title", unsafe extern "C" fn(Ptr, *const c_char)),
             gtk_window_set_default_size: gs!("gtk_window_set_default_size", unsafe extern "C" fn(Ptr, c_int, c_int)),
+            gtk_window_get_default_size: gs!("gtk_window_get_default_size", unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int)),
             gtk_window_close: gs!("gtk_window_close", unsafe extern "C" fn(Ptr)),
             adw_application_window_set_content: gs!(adw "adw_application_window_set_content", unsafe extern "C" fn(Ptr, Ptr)),
             gtk_window_present: gs!("gtk_window_present", unsafe extern "C" fn(Ptr)),
@@ -262,6 +278,7 @@ fn load_lib() -> Result<Lib, String> {
             gtk_widget_add_controller: gs!("gtk_widget_add_controller", unsafe extern "C" fn(Ptr, Ptr) -> c_uint),
             gtk_widget_get_display: gs!("gtk_widget_get_display", unsafe extern "C" fn(Ptr) -> Ptr),
             gtk_widget_set_tooltip_text: gs!("gtk_widget_set_tooltip_text", unsafe extern "C" fn(Ptr, *const c_char)),
+            gtk_widget_create_pango_layout: gs!("gtk_widget_create_pango_layout", unsafe extern "C" fn(Ptr, *const c_char) -> Ptr),
             gtk_event_controller_key_new: gs!("gtk_event_controller_key_new", unsafe extern "C" fn() -> Ptr),
             gtk_event_controller_set_propagation_phase: gs!("gtk_event_controller_set_propagation_phase", unsafe extern "C" fn(Ptr, c_int)),
             gtk_css_provider_new: gs!("gtk_css_provider_new", unsafe extern "C" fn() -> Ptr),
@@ -284,6 +301,14 @@ fn load_lib() -> Result<Lib, String> {
             adw_status_page_set_title: gs!(adw "adw_status_page_set_title", unsafe extern "C" fn(Ptr, *const c_char)),
             adw_status_page_set_description: gs!(adw "adw_status_page_set_description", unsafe extern "C" fn(Ptr, *const c_char)),
             adw_status_page_set_child: gs!(adw "adw_status_page_set_child", unsafe extern "C" fn(Ptr, Ptr)),
+            adw_style_manager_get_default: gs!(adw "adw_style_manager_get_default", unsafe extern "C" fn() -> Ptr),
+            adw_style_manager_get_dark: gs!(adw "adw_style_manager_get_dark", unsafe extern "C" fn(Ptr) -> c_int),
+            pango_layout_set_text: gs!(pango "pango_layout_set_text", unsafe extern "C" fn(Ptr, *const c_char, c_int)),
+            pango_layout_get_size: gs!(pango "pango_layout_get_size", unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int)),
+            pango_layout_set_font_description: gs!(pango "pango_layout_set_font_description", unsafe extern "C" fn(Ptr, Ptr)),
+            pango_font_description_from_string: gs!(pango "pango_font_description_from_string", unsafe extern "C" fn(*const c_char) -> Ptr),
+            pango_font_description_set_absolute_size: gs!(pango "pango_font_description_set_absolute_size", unsafe extern "C" fn(Ptr, f64)),
+            pango_font_description_free: gs!(pango "pango_font_description_free", unsafe extern "C" fn(Ptr)),
             g_object_set: gs!(go "g_object_set", unsafe extern "C" fn(Ptr, *const c_char, ...)),
             g_object_unref: gs!(go "g_object_unref", unsafe extern "C" fn(Ptr)),
             g_object_ref_sink: gs!(go "g_object_ref_sink", unsafe extern "C" fn(Ptr) -> Ptr),
@@ -339,12 +364,22 @@ struct App {
     hits: Ptr,
     css: Ptr,
     zoom: f64,
+    /// real pixel width of one monospace column at the current zoom, 0 until measured
+    mono_px: f64,
     files: Vec<String>,
     idx: usize,
     content: Option<String>, // set when the document came from stdin
     mtime: Option<SystemTime>,
+    /// last rendered source and the column budget it was rendered with, so
+    /// resizes and zoom changes re-lay out without re-reading the file
+    src_cache: Option<String>,
+    budget: usize,
+    /// a view resize was seen and not yet acted upon
+    width_dirty: bool,
     /// margin tags by name: (tag, quote depth, indent cols, hanging cols, is code block)
     ptags: HashMap<String, (Ptr, usize, usize, usize, bool)>,
+    /// colored tags with their light and dark foregrounds (apply_theme_colors)
+    ctags: Vec<(Ptr, &'static str, &'static str)>,
     status_shown: bool,
     find_shown: bool,
 }
@@ -428,31 +463,32 @@ unsafe fn make_tags() {
     set_i(tag("under"), "underline", UNDERLINE_SINGLE);
 
     let t = tag("role-code");
-    set_s(t, "family", "Monospace");
+    set_s(t, "family", MONO_FAMILY);
     set_s(t, "background", "rgba(127,127,127,0.18)");
     set_i(t, "background-set", 1);
-    set_f(t, "scale", 0.92);
 
     let t = tag("role-link");
-    set_s(t, "foreground", "#3584e4");
     set_i(t, "foreground-set", 1);
     set_i(t, "underline", UNDERLINE_SINGLE);
+    (*app()).ctags.push((t, "#1c71d8", "#78aeed"));
 
-    for (name, color) in
-        [("role-faint", "#77767b"), ("role-bullet", "#ff7800"), ("role-image", "#9141ac"),
-         ("role-done", "#2ec27e"), ("role-bar", "#1c71d8")]
+    // colored tags carry light and dark Adwaita palette colors, applied by
+    // apply_theme_colors and updated live on the style manager's notify::dark
+    for (name, light, dark) in
+        [("role-frame", "#a0aaaf", "#6f6f6f"), ("role-faint", "#5e5c64", "#9a999d"),
+         ("role-bullet", "#e66100", "#ffa348"), ("role-image", "#613583", "#d56199"),
+         ("role-done", "#26a269", "#2ec27e"), ("role-bar", "#1c71d8", "#3584e4")]
     {
         let t = tag(name);
-        set_s(t, "foreground", color);
         set_i(t, "foreground-set", 1);
+        (*app()).ctags.push((t, light, dark));
     }
 
-    // DejaVu (always on Ubuntu) has the 0.6 em advance MONO_ADVANCE assumes
-    set_s(tag("lead"), "family", "DejaVu Sans Mono, Monospace");
+    // pinned family wherever columns must line up (see col_px and measure_mono)
+    set_s(tag("lead"), "family", MONO_FAMILY);
 
     let t = tag("mono");
-    set_s(t, "family", "Monospace");
-    set_f(t, "scale", 0.92);
+    set_s(t, "family", MONO_FAMILY);
 
     let t = tag("rule");
     set_s(t, "paragraph-background", "rgba(127,127,127,0.28)");
@@ -463,11 +499,51 @@ unsafe fn make_tags() {
     let t = tag("hit");
     set_s(t, "background", "rgba(246,201,83,0.45)");
     set_i(t, "background-set", 1);
+
+    apply_theme_colors();
+}
+
+/// Paint the current Adwaita light/dark palette onto the registered colored
+/// tags. Tag properties are live: the notify::dark handler repaints the whole
+/// buffer by just updating the tags, with no re-render.
+unsafe fn apply_theme_colors() {
+    let is_dark = (l().adw_style_manager_get_dark)((l().adw_style_manager_get_default)()) != 0;
+    for (t, light, dark) in (*app()).ctags.iter().copied() {
+        set_s(t, "foreground", if is_dark { dark } else { light });
+    }
+}
+
+// style manager notify::dark handler: (instance, param-spec, user_data).
+unsafe extern "C" fn on_dark_changed(_: Ptr, _: Ptr, _: Ptr) {
+    unsafe { apply_theme_colors() }
+}
+
+/// Measure the real pixel width of one monospace column at the current zoom:
+/// Pango lays out 200 `0` glyphs under the same explicit font description the
+/// CSS zoom size implies (Pango units are 1/1024 px, unrounded). Called from
+/// apply_css so margins and budgets follow every zoom change.
+unsafe fn measure_mono() {
+    let text = cstr(&"0".repeat(200));
+    let layout = (l().gtk_widget_create_pango_layout)((*app()).view, std::ptr::null());
+    let desc = (l().pango_font_description_from_string)(c"DejaVu Sans Mono".as_ptr());
+    (l().pango_font_description_set_absolute_size)(desc, BASE_FONT_PX * (*app()).zoom * 1024.0);
+    (l().pango_layout_set_font_description)(layout, desc);
+    (l().pango_layout_set_text)(layout, text.as_ptr(), text.as_bytes().len() as c_int);
+    let (mut w, mut h) = (0 as c_int, 0 as c_int);
+    (l().pango_layout_get_size)(layout, &mut w, &mut h);
+    (*app()).mono_px = w as f64 / 200.0 / 1024.0;
+    (l().pango_font_description_free)(desc);
+    (l().g_object_unref)(layout);
 }
 
 /// Width of one monospace column at the current zoom, in pixels.
 unsafe fn col_px() -> f64 {
-    BASE_FONT_PX * (*app()).zoom * MONO_ADVANCE
+    let m = (*app()).mono_px;
+    if m > 1.0 {
+        m
+    } else {
+        BASE_FONT_PX * (*app()).zoom * MONO_ADVANCE // before the first measure_mono()
+    }
 }
 
 /// (Re)compute the pixel margins of one margin tag. Margins accumulate onto
@@ -480,7 +556,10 @@ unsafe fn set_margins(t: Ptr, depth: usize, indent: usize, hanging: usize, code:
     let cols = |n: usize| (n as f64 * px).round() as c_int;
     set_i(t, "accumulative-margin", 1);
     if code {
-        set_i(t, "left-margin", cols(depth * 2)); // block content clears the bars
+        // quote bars and gutters are buffer text now (see bar_text), so block
+        // content starts flush at the margin, exactly like the terminal
+        set_i(t, "left-margin", 0);
+        set_i(t, "indent", 0);
     } else {
         // top-level list markers sit in a fixed two-column gutter
         let gutter = if depth == 0 && hanging > 0 { 2 } else { 0 };
@@ -494,10 +573,9 @@ unsafe fn ensure_margin(name: String, depth: usize, indent: usize, hanging: usiz
     if !a.ptags.contains_key(&name) {
         let t = tag(&name);
         if code {
-            set_s(t, "family", "Monospace");
+            set_s(t, "family", MONO_FAMILY);
             set_s(t, "paragraph-background", "rgba(127,127,127,0.11)");
             set_i(t, "paragraph-background-set", 1);
-            set_f(t, "scale", 0.92);
         }
         set_margins(t, depth, indent, hanging, code);
         a.ptags.insert(name.clone(), (t, depth, indent, hanging, code));
@@ -505,7 +583,8 @@ unsafe fn ensure_margin(name: String, depth: usize, indent: usize, hanging: usiz
     name
 }
 
-/// Code-block tag per blockquote depth (one shaded block, margins clear the bars).
+/// Code-block tag per blockquote depth (one shaded block; bars sit in the
+/// text at the margin, so the block itself needs no left inset).
 unsafe fn ensure_cb(depth: usize) -> String {
     ensure_margin(format!("cb{depth}"), depth, 0, 0, true)
 }
@@ -516,21 +595,6 @@ unsafe fn ensure_para_tag(depth: usize, indent: usize, hanging: usize) -> Option
         return None;
     }
     Some(ensure_margin(format!("p{depth}-{indent}-{hanging}"), depth, indent, hanging, false))
-}
-
-/// Plain left margin for tables and rules inside quotes (they never wrap).
-unsafe fn ensure_margin_tag(depth: usize) -> Option<String> {
-    if depth == 0 {
-        return None;
-    }
-    let name = format!("m{depth}");
-    let a = &mut *app();
-    if !a.ptags.contains_key(&name) {
-        let t = tag(&name);
-        set_margins(t, depth, 0, 0, true);
-        a.ptags.insert(name.clone(), (t, depth, 0, 0, true));
-    }
-    Some(name)
 }
 
 // ------------------------------------------------------------- rendering ---
@@ -548,8 +612,9 @@ unsafe fn insert_text(text: &str, tags: &[String]) {
         return;
     }
     // pad to a fixed number of names: "base" repeats are harmless
+    debug_assert!(tags.len() <= 10);
     let mut names: Vec<CString> = tags.iter().map(|s| cstr(s)).collect();
-    while names.len() < 6 {
+    while names.len() < 10 {
         names.push(cstr("base"));
     }
     (l().gtk_text_buffer_insert_with_tags_by_name)(
@@ -563,6 +628,10 @@ unsafe fn insert_text(text: &str, tags: &[String]) {
         names[3].as_ptr(),
         names[4].as_ptr(),
         names[5].as_ptr(),
+        names[6].as_ptr(),
+        names[7].as_ptr(),
+        names[8].as_ptr(),
+        names[9].as_ptr(),
         std::ptr::null::<c_char>(),
     );
 }
@@ -596,6 +665,12 @@ fn style_tag_names(s: &Span) -> Vec<String> {
     t
 }
 
+/// Quote bars as buffer text: one `┃ ` per quote depth, occupying the
+/// columns where a paragraph would hang its bar (the terminal does the same).
+fn bar_text(depth: usize) -> String {
+    "┃ ".repeat(depth)
+}
+
 /// Insert spans; the first `lead` columns (list bullet, task box) and the
 /// quote bars are set in monospace so the hanging indent lines up exactly.
 unsafe fn emit_spans(spans: &[Span], base: &[String], depth: usize, lead: usize) {
@@ -603,7 +678,7 @@ unsafe fn emit_spans(spans: &[Span], base: &[String], depth: usize, lead: usize)
         let mut bt = base.to_vec();
         bt.push("role-bar".into());
         bt.push("lead".into());
-        insert_text(&"┃ ".repeat(depth), &bt);
+        insert_text(&bar_text(depth), &bt);
     }
     let mut col = 0usize;
     for s in spans {
@@ -620,13 +695,17 @@ unsafe fn emit_spans(spans: &[Span], base: &[String], depth: usize, lead: usize)
 unsafe fn emit(lines: &[Line], depth: usize) {
     for line in lines {
         match line {
-            Line::Blank => insert_text("\n", &[]),
-            Line::Rule => {
-                let mut t = vec!["rule".to_string()];
-                if let Some(m) = ensure_margin_tag(depth) {
-                    t.push(m);
+            Line::Blank => {
+                if depth > 0 {
+                    insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
                 }
-                insert_text("\n", &t);
+                insert_text("\n", &[]);
+            }
+            Line::Rule => {
+                if depth > 0 {
+                    insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
+                }
+                insert_text("\n", &["rule".to_string()]);
             }
             Line::Heading { lvl, spans } => {
                 let mut t = vec![format!("h{}", (*lvl).clamp(1, 6))];
@@ -647,18 +726,40 @@ unsafe fn emit(lines: &[Line], depth: usize) {
             Line::Code { lines, .. } => {
                 let t = vec![ensure_cb(depth)];
                 for cl in lines {
+                    if depth > 0 {
+                        insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
+                    }
                     insert_text(cl, &t);
                     insert_text("\n", &t);
                 }
             }
             Line::Table(t) => {
-                let mut tags = vec!["mono".to_string()];
-                if let Some(m) = ensure_margin_tag(depth) {
-                    tags.push(m);
-                }
-                for row in table_text(t) {
-                    insert_text(&row, &tags);
-                    insert_text("\n", &tags);
+                // styled pieces: faint frame, bold header, and cell roles
+                // (code, links) survive; padding stays plain mono
+                for row in table_pieces(t) {
+                    if depth > 0 {
+                        insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
+                    }
+                    for p in row {
+                        match p {
+                            TablePiece::Frame(f) => {
+                                insert_text(&f, &["mono".into(), "role-frame".into()])
+                            }
+                            TablePiece::Cell { spans, pad_l, pad_r, header } => {
+                                insert_text(&" ".repeat(pad_l), &["mono".into()]);
+                                for s in spans {
+                                    let mut tags = vec!["mono".to_string()];
+                                    if header {
+                                        tags.push("bold".into());
+                                    }
+                                    tags.extend(style_tag_names(&s));
+                                    insert_text(&s.text, &tags);
+                                }
+                                insert_text(&" ".repeat(pad_r), &["mono".into()]);
+                            }
+                        }
+                    }
+                    insert_text("\n", &["mono".into()]);
                 }
             }
             Line::Quote { inner } => emit(inner, depth + 1),
@@ -673,6 +774,40 @@ unsafe fn current_path() -> Option<String> {
     a.files.get(a.idx).cloned()
 }
 
+/// Parse `src` with a `cols`-column budget and render it into the buffer.
+unsafe fn render_source(src: &str, cols: usize) {
+    let cfg = Cfg::new(false, cols, true);
+    let parsed = parse(src, &cfg);
+    let a = &mut *app();
+    (l().gtk_text_buffer_set_text)(a.buffer, c"".as_ptr(), 0);
+    emit(&parsed, 0);
+}
+
+/// Width of the text area in monospace columns: what one table line may use.
+unsafe fn view_cols() -> usize {
+    let a = &*app();
+    let mut w = (l().gtk_widget_get_width)(a.view);
+    if w < 300 {
+        // not allocated yet (first load runs before the window is realized):
+        // fall back to the window's configured default width
+        let (mut dw, mut dh) = (0 as c_int, 0 as c_int);
+        (l().gtk_window_get_default_size)(a.win, &mut dw, &mut dh);
+        w = dw;
+    }
+    // 56 = the two 28 px view margins, 16 = scrollbar allowance
+    (((w - 56 - 16) as f64 / col_px()).floor() as usize).clamp(24, 400)
+}
+
+/// Re-parse and re-emit the cached source for the current zoom and window
+/// width, without touching disk or the title. The scroll position may jump
+/// (Phase 2 preserves view state across re-renders).
+unsafe fn relayout_cached() {
+    let cols = view_cols();
+    let Some(src) = (*app()).src_cache.clone() else { return };
+    (*app()).budget = cols;
+    render_source(&src, cols);
+}
+
 unsafe fn load_current() {
     let src = match &(*app()).content {
         Some(c) => c.clone(),
@@ -684,11 +819,10 @@ unsafe fn load_current() {
             None => String::new(),
         },
     };
-    let cfg = Cfg::new(false, 120, true);
-    let parsed = parse(&src, &cfg);
-    let a = &mut *app();
-    (l().gtk_text_buffer_set_text)(a.buffer, c"".as_ptr(), 0);
-    emit(&parsed, 0);
+    let cols = view_cols();
+    (*app()).src_cache = Some(src.clone());
+    (*app()).budget = cols;
+    render_source(&src, cols);
 
     let shown = match &(*app()).content {
         Some(_) => "(stdin)".to_string(),
@@ -799,6 +933,7 @@ unsafe fn hide_findbar() {
 // --------------------------------------------------------------- zoom ---
 
 unsafe fn apply_css() {
+    measure_mono(); // margins below convert columns with the measured advance
     let zoom = (*app()).zoom;
     let css = format!(
         ".mdglassview {{ font-size: {:.1}px; }}\n.mdglassfind {{ border-top: 1px solid alpha(currentColor, 0.12); }}\n",
@@ -867,21 +1002,24 @@ unsafe extern "C" fn act_reload(_: Ptr, _: Ptr, _: Ptr) {
 unsafe extern "C" fn act_zoom_in(_: Ptr, _: Ptr, _: Ptr) {
     unsafe {
         (*app()).zoom = ((*app()).zoom * 1.15).min(3.0);
-        apply_css();
+        apply_css(); // re-measures mono_px
+        relayout_cached(); // tables re-fit at the new zoom
     }
 }
 
 unsafe extern "C" fn act_zoom_out(_: Ptr, _: Ptr, _: Ptr) {
     unsafe {
         (*app()).zoom = ((*app()).zoom / 1.15).max(0.5);
-        apply_css();
+        apply_css(); // re-measures mono_px
+        relayout_cached(); // tables re-fit at the new zoom
     }
 }
 
 unsafe extern "C" fn act_zoom_reset(_: Ptr, _: Ptr, _: Ptr) {
     unsafe {
         (*app()).zoom = 1.0;
-        apply_css();
+        apply_css(); // re-measures mono_px
+        relayout_cached(); // tables re-fit at the new zoom
     }
 }
 
@@ -930,6 +1068,27 @@ unsafe extern "C" fn key_press(_ctrl: Ptr, keyval: c_uint, _code: c_uint, _state
         }
     }
     0
+}
+
+// view notify::width handler: (instance, param-spec, user_data). A resize is
+// only noted here; on_relayout_tick debounces it and re-renders only when the
+// column budget actually changed.
+unsafe extern "C" fn on_view_width(_: Ptr, _: Ptr, _: Ptr) {
+    unsafe { (*app()).width_dirty = true }
+}
+
+unsafe extern "C" fn on_relayout_tick(_data: Ptr) -> c_int {
+    unsafe {
+        let a = &mut *app();
+        if !a.width_dirty || a.status_shown {
+            return 1;
+        }
+        a.width_dirty = false;
+        if view_cols() != a.budget {
+            relayout_cached();
+        }
+    }
+    1
 }
 
 unsafe extern "C" fn on_tick(_data: Ptr) -> c_int {
@@ -984,8 +1143,15 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     (l().gtk_text_view_set_top_margin)(a.view, 12);
     (l().gtk_text_view_set_bottom_margin)(a.view, 36);
     (l().gtk_widget_add_css_class)(a.view, c"mdglassview".as_ptr());
+    connect(a.view, "notify::width", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(on_view_width));
     a.buffer = (l().gtk_text_view_get_buffer)(a.view);
     make_tags();
+    // live light/dark switch: apply_theme_colors updates the tags in place
+    connect(
+        (l().adw_style_manager_get_default)(),
+        "notify::dark",
+        cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(on_dark_changed),
+    );
     (l().gtk_scrolled_window_set_child)(a.scrolled, a.view);
 
     a.status = build_status_page();
@@ -1015,6 +1181,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     }
     (l().gtk_window_present)(a.win);
     (l().g_timeout_add_seconds)(2, Some(on_tick), std::ptr::null_mut());
+    (l().g_timeout_add)(200, Some(on_relayout_tick), std::ptr::null_mut());
     if std::env::var_os("MDGLASS_GUI_SCRIPT").is_some() {
         (l().g_timeout_add)(700, Some(on_script_step), std::ptr::null_mut());
     }
@@ -1267,11 +1434,16 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         hits: std::ptr::null_mut(),
         css: std::ptr::null_mut(),
         zoom: 1.0,
+        mono_px: 0.0,
         files,
         idx: 0,
         content,
         mtime: None,
+        src_cache: None,
+        budget: 120,
+        width_dirty: false,
         ptags: HashMap::new(),
+        ctags: Vec::new(),
         status_shown: false,
         find_shown: false,
     });

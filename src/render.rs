@@ -204,7 +204,7 @@ fn table_ansi(t: &Table, cfg: &Cfg) -> Vec<String> {
         .iter()
         .map(|row| match row {
             TableRow::Top => border('╭', '┬', '╮'),
-            TableRow::Sep => border('┝', '┿', '┥'),
+            TableRow::Sep => border('├', '┼', '┤'),
             TableRow::Bottom => border('╰', '┴', '╯'),
             TableRow::Cells { header, cells } => row_line(cells, *header),
         })

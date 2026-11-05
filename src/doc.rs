@@ -1078,7 +1078,6 @@ pub enum TablePiece {
         spans: Vec<Span>,
         pad_l: usize,
         pad_r: usize,
-        #[allow(dead_code)] // read by the Phase 1 styled GUI emitter
         header: bool,
     },
 }
@@ -1095,7 +1094,7 @@ pub fn table_pieces(t: &Table) -> Vec<Vec<TablePiece>> {
     for row in &t.rows {
         let pieces = match row {
             TableRow::Top => vec![TablePiece::Frame(border('╭', '┬', '╮'))],
-            TableRow::Sep => vec![TablePiece::Frame(border('┝', '┿', '┥'))],
+            TableRow::Sep => vec![TablePiece::Frame(border('├', '┼', '┤'))],
             TableRow::Bottom => vec![TablePiece::Frame(border('╰', '┴', '╯'))],
             TableRow::Cells { header, cells } => {
                 let mut p = vec![TablePiece::Frame("│".to_string())];
@@ -1121,9 +1120,9 @@ pub fn table_pieces(t: &Table) -> Vec<Vec<TablePiece>> {
     out
 }
 
-/// Lay a table out as plain box-drawn text rows (what the GUI renders).
-/// Rendered from `table_pieces` so both paths share one code path and
-/// cannot drift apart.
+/// Lay a table out as plain box-drawn text rows (the terminal's plain
+/// path; the GUI consumes `table_pieces` directly). Rendered from
+/// `table_pieces` so both paths share one code path and cannot drift apart.
 pub fn table_text(t: &Table) -> Vec<String> {
     table_pieces(t)
         .into_iter()
@@ -1270,7 +1269,7 @@ mod tests {
         let t = demo_table();
         let text = table_text(&t);
         assert_eq!(text[0], format!("╭{}┬{}╮", "─".repeat(7), "─".repeat(9)));
-        assert!(text[2].starts_with('┝') && text[2].contains('┿'));
+        assert!(text[2].starts_with('├') && text[2].contains('┼'));
         assert!(text[4].starts_with('╰') && text[4].ends_with('╯'));
         // golden cell line: pins the shared pad/truncate math byte for byte
         assert_eq!(text[1], "│ ab    │      cd │");
