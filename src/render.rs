@@ -465,10 +465,8 @@ fn blocks(lines: &[&str], cfg: &Cfg) -> Vec<String> {
         }
 
         // fenced code
-        if t.starts_with("```") || t.starts_with("~~~") {
-            let fc = t.chars().next().unwrap();
-            let fence: String = t.chars().take_while(|&c| c == fc).collect();
-            let lang = t[fence.len()..].trim().to_string();
+        if let Some((fence, lang)) = fence_open(t) {
+            let fc = fence.chars().next().unwrap();
             out.push(fence_top(cfg, &lang));
             let mut in_block = false;
             i += 1;
@@ -717,8 +715,7 @@ fn is_block_start(l: &str) -> bool {
     let t = l.trim_start();
     t.starts_with('#')
         || t.starts_with('>')
-        || t.starts_with("```")
-        || t.starts_with("~~~")
+        || fence_open(t).is_some()
         || t.starts_with('|')
         || list_item(l).is_some()
 }
@@ -751,15 +748,28 @@ fn heading(cfg: &Cfg, lvl: usize, text: &str) -> Vec<String> {
     wrap_indent(&format!(" {body}"), cfg.width, " ")
 }
 
+/// An opening code fence (3+ backticks or tildes): returns the fence and the
+/// language (first word of the info string). A backtick fence cannot have
+/// backticks in its info string; such a line is inline code instead.
+fn fence_open(t: &str) -> Option<(String, String)> {
+    let fc = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let fence: String = t.chars().take_while(|&c| c == fc).collect();
+    let info = &t[fence.len()..];
+    if fence.len() < 3 || (fc == '`' && info.contains('`')) {
+        return None;
+    }
+    Some((fence, info.split_whitespace().next().unwrap_or("").to_string()))
+}
+
 fn fence_top(cfg: &Cfg, lang: &str) -> String {
     if !cfg.color {
-        return format!("```{lang}");
+        return truncate_to(&format!("```{lang}"), cfg.width);
     }
     let w = cfg.width;
     if w < 6 {
         return st(cfg, "2", &"─".repeat(w));
     }
-    let label = if lang.is_empty() { String::new() } else { format!(" {lang} ") };
+    let label = if lang.is_empty() { String::new() } else { truncate_to(&format!(" {lang} "), w - 4) };
     let lw = visible_width(&label);
     let dashes = w.saturating_sub(2 + lw);
     let (a, b) = (dashes / 2, dashes - dashes / 2);

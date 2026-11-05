@@ -86,7 +86,8 @@ check("search: second match reached with n", "para 40 TARGET" in visible(out))
 out, exited = run_pty([targets], [b"\x1b"])
 check("bare Esc quits", exited)
 
-piped = subprocess.run([MDV, doc("h.md", "# hi\n\n[x](https://x.io)\n")], capture_output=True).stdout
+wide_table = "| a | b |\n|---|---|\n| " + "word " * 30 + " | " + "x" * 90 + " |\n"
+piped = subprocess.run([MDV, doc("h.md", "# hi\n\n[x](https://x.io)\n\n" + wide_table)], capture_output=True).stdout
 check("piped output has no escape codes", b"\x1b" not in piped, piped[:60])
 forced = subprocess.run([MDV, "-n", "--color", os.path.join(tmp, "h.md")], capture_output=True).stdout
 check("--color forces colors when piped", b"\x1b[" in forced)

@@ -261,6 +261,41 @@ fn indented_text_after_list_is_not_code() {
 }
 
 #[test]
+fn plain_truncated_table_has_no_escapes() {
+    let doc = format!("| a | b |\n|---|---|\n| {} | {} |", "word ".repeat(30), "x".repeat(90));
+    let rows = render(&doc, &cfg_plain());
+    assert!(rows.iter().all(|r| !r.contains('\u{1b}')), "{rows:?}");
+    assert!(rows.iter().all(|r| visible_width(r) <= 80));
+    assert!(rows.iter().any(|r| r.contains('…')));
+}
+
+#[test]
+fn emoji_and_cjk_widths() {
+    use crate::ansi::char_width;
+    for c in ['❌', '✅', '⚡', '🚀', '🧪', '☰', '日', 'Ｗ'] {
+        assert_eq!(char_width(c), 2, "{c} U+{:04X}", c as u32);
+    }
+    for c in ['a', 'é', '→', '│', '✔', '🌡', '🛠', '©'] {
+        assert_eq!(char_width(c), 1, "{c} U+{:04X}", c as u32);
+    }
+    for c in ['\u{301}', '\u{200d}', '\u{fe0f}', '\u{64e}'] {
+        assert_eq!(char_width(c), 0, "U+{:04X}", c as u32);
+    }
+}
+
+#[test]
+fn inline_triple_backticks_are_not_a_fence() {
+    let rows = render("```pip install torch --index-url https://x```\n\nafter", &cfg_plain());
+    assert_eq!(rows, vec!["pip install torch --index-url https://x", "", "after"]);
+}
+
+#[test]
+fn fence_language_is_first_word_of_info() {
+    let rows = render("```python title=\"x.py\"\nprint(1)\n```", &cfg_plain());
+    assert_eq!(rows, vec!["```python", "print(1)", "```"]);
+}
+
+#[test]
 fn multiline_html_comment_hidden() {
     let rows = render("a\n\n<!--\nsecret\n-->\n\nb", &cfg_plain());
     assert!(!rows.iter().any(|r| r.contains("secret")));
