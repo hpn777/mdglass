@@ -1,0 +1,23 @@
+Source: mdglass
+Section: text
+Priority: optional
+Maintainer: Rafal Okninski <hpn777@gmail.com>
+Build-Depends: debhelper-compat (= 13), cargo, rustc (>= 1.77)
+Standards-Version: 4.7.0
+Homepage: https://github.com/hpn777/mdglass
+Vcs-Browser: https://github.com/hpn777/mdglass
+Vcs-Git: https://github.com/hpn777/mdglass.git
+Rules-Requires-Root: no
+
+Package: mdglass
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: libgtk-4-1, libadwaita-1-0
+Description: fast markdown viewer: terminal pager and GNOME preview
+ mdglass renders markdown in the terminal with colors, tables, highlighted
+ code blocks and clickable links, in a built-in less-style pager with search;
+ piped output is plain, word-wrapped text. mdglass --gui opens a native GNOME
+ (GTK4/libadwaita) preview window with find, zoom and live reload.
+ .
+ The GNOME libraries are loaded at runtime, so the terminal viewer works
+ without them.

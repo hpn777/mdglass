@@ -97,29 +97,11 @@ esac
 #    the terminal pager is a hidden alternative (x-terminal-emulator -e works
 #    with gnome-terminal, konsole, xterm; Ptyxis needs "ptyxis -- CMD").
 if [ "$DESKTOP" = 1 ]; then
-    gui="[Desktop Entry]
-Type=Application
-Name=MD Glass
-GenericName=Markdown Viewer
-Comment=View Markdown documents with a native GNOME preview
-Exec=$PREFIX/$BIN_NAME --gui %f
-Icon=io.github.hpn777.MdGlass
-Terminal=false
-Categories=Utility;TextEditor;
-Keywords=markdown;viewer;preview;
-MimeType=text/markdown;text/x-markdown;
-StartupWMClass=io.github.hpn777.MdGlass"
-    term="[Desktop Entry]
-Type=Application
-Name=MD Glass (terminal)
-Comment=Terminal markdown viewer with pager
-Exec=x-terminal-emulator -e $PREFIX/$BIN_NAME %f
-Icon=io.github.hpn777.MdGlass
-Terminal=false
-NoDisplay=true
-MimeType=text/markdown;text/x-markdown;"
-    printf '%s\n' "$gui" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "$DESKTOP_FILE"
-    printf '%s\n' "$term" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "${APPS_DIR}/mdglass-terminal.desktop"
+    # same entries as the package, pointing at the installed binary
+    sed "s|^Exec=mdglass |Exec=$PREFIX/$BIN_NAME |" packaging/io.github.hpn777.MdGlass.desktop \
+        | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "$DESKTOP_FILE"
+    sed "s| -e mdglass | -e $PREFIX/$BIN_NAME |" packaging/mdglass-terminal.desktop \
+        | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "${APPS_DIR}/mdglass-terminal.desktop"
     $(sudo_for "$ICON_DIR") install -Dm644 packaging/io.github.hpn777.MdGlass.svg "$ICON_FILE"
     command -v update-desktop-database >/dev/null 2>&1 && $(sudo_for "$APPS_DIR") update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
     command -v gtk-update-icon-cache >/dev/null 2>&1 && $(sudo_for "$ICON_DIR") gtk-update-icon-cache -qf "$ICON_DIR" >/dev/null 2>&1 || true

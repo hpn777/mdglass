@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+# Builds offline from the crates vendored into the orig tarball (vendor/),
+# as Launchpad and Debian build machines have no network.
+
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+export CARGO_TARGET_DIR = $(CURDIR)/target
+JOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+CARGO_JOBS = $(if $(JOBS),--jobs $(JOBS))
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	mkdir -p $(CARGO_HOME)
+	printf '[source.crates-io]\nreplace-with = "vendored"\n\n[source.vendored]\ndirectory = "%s"\n' \
+		"$(CURDIR)/vendor" > $(CARGO_HOME)/config.toml
+
+override_dh_auto_build:
+	cargo build --release --offline --locked $(CARGO_JOBS)
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	cargo test --release --offline --locked $(CARGO_JOBS)
+endif
+
+override_dh_auto_install:
+	install -Dm755 target/release/mdglass debian/mdglass/usr/bin/mdglass
+
+override_dh_auto_clean:
+	rm -rf target debian/cargo-home

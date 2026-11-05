@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=MD Glass
+GenericName=Markdown Viewer
+Comment=View Markdown documents with a native GNOME preview
+Exec=mdglass --gui %f
+Icon=io.github.hpn777.MdGlass
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=markdown;viewer;preview;
+MimeType=text/markdown;text/x-markdown;
+StartupNotify=true
+StartupWMClass=io.github.hpn777.MdGlass

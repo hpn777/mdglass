@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=MD Glass (terminal)
+Comment=Terminal markdown viewer with pager
+Exec=x-terminal-emulator -e mdglass %f
+Icon=io.github.hpn777.MdGlass
+Terminal=false
+NoDisplay=true
+MimeType=text/markdown;text/x-markdown;

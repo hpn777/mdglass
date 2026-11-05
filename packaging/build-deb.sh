@@ -23,39 +23,16 @@ ROOT="$WORK/$PKG"
 install -Dm755 "$BIN" "$ROOT/usr/bin/mdglass"
 install -Dm644 packaging/mdglass.1 "$ROOT/usr/share/man/man1/mdglass.1"
 gzip -9n "$ROOT/usr/share/man/man1/mdglass.1"
-install -Dm644 packaging/copyright "$ROOT/usr/share/doc/mdglass/copyright"
-install -Dm644 packaging/changelog "$ROOT/usr/share/doc/mdglass/changelog.Debian"
+install -Dm644 debian/copyright "$ROOT/usr/share/doc/mdglass/copyright"
+install -Dm644 debian/changelog "$ROOT/usr/share/doc/mdglass/changelog.Debian"
 gzip -9n "$ROOT/usr/share/doc/mdglass/changelog.Debian"
 install -Dm644 README.md "$ROOT/usr/share/doc/mdglass/README.md"
 install -Dm644 packaging/io.github.hpn777.MdGlass.metainfo.xml "$ROOT/usr/share/metainfo/io.github.hpn777.MdGlass.metainfo.xml"
 install -Dm644 packaging/io.github.hpn777.MdGlass.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/io.github.hpn777.MdGlass.svg"
 # GNOME preview is the visible "Open With" app; the terminal pager stays as a
 # hidden alternative. desktop-file-utils triggers refresh the cache on install.
-install -Dm644 /dev/stdin "$ROOT/usr/share/applications/io.github.hpn777.MdGlass.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=MD Glass
-GenericName=Markdown Viewer
-Comment=View Markdown documents with a native GNOME preview
-Exec=mdglass --gui %f
-Icon=io.github.hpn777.MdGlass
-Terminal=false
-Categories=Utility;TextEditor;
-Keywords=markdown;viewer;preview;
-MimeType=text/markdown;text/x-markdown;
-StartupWMClass=io.github.hpn777.MdGlass
-EOF
-install -Dm644 /dev/stdin "$ROOT/usr/share/applications/mdglass-terminal.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=MD Glass (terminal)
-Comment=Terminal markdown viewer with pager
-Exec=x-terminal-emulator -e mdglass %f
-Icon=io.github.hpn777.MdGlass
-Terminal=false
-NoDisplay=true
-MimeType=text/markdown;text/x-markdown;
-EOF
+install -Dm644 packaging/io.github.hpn777.MdGlass.desktop "$ROOT/usr/share/applications/io.github.hpn777.MdGlass.desktop"
+install -Dm644 packaging/mdglass-terminal.desktop "$ROOT/usr/share/applications/mdglass-terminal.desktop"
 
 # Shared-library dependencies, computed from the binary
 mkdir -p "$WORK/shlibs/debian"

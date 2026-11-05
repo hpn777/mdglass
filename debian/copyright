@@ -6,6 +6,19 @@ Files: *
 Copyright: 2026 hpn777
 License: MIT
 
+Files: vendor/libc/* vendor/numtoa/*
+Copyright: The Rust Project Developers; Michael Aaron Murphy
+License: MIT or Apache-2.0
+Comment: vendored Rust crates
+
+Files: vendor/termion/*
+Copyright: Ticki and contributors
+License: MIT
+
+License: Apache-2.0
+ On Debian systems, the full text of the Apache License 2.0 can be found
+ in /usr/share/common-licenses/Apache-2.0.
+
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal

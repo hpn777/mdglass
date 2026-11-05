@@ -1,0 +1,4 @@
+packaging/io.github.hpn777.MdGlass.desktop usr/share/applications
+packaging/mdglass-terminal.desktop usr/share/applications
+packaging/io.github.hpn777.MdGlass.svg usr/share/icons/hicolor/scalable/apps
+packaging/io.github.hpn777.MdGlass.metainfo.xml usr/share/metainfo
