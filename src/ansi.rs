@@ -8,11 +8,6 @@ pub fn sg(code: &str) -> String {
     format!("\x1b[{code}m")
 }
 
-/// Wrap already-rendered text in an SGR code, restoring base style after resets.
-pub fn restyled(inner: &str, base: &str) -> String {
-    format!("{base}{}{RESET}", inner.replace(RESET, &format!("{RESET}{base}")))
-}
-
 /// Zero-width code points: combining marks, joiners, variation selectors.
 const ZERO: &[(u32, u32)] = &[
     (0x0300, 0x036F), (0x0483, 0x0489), (0x0591, 0x05BD), (0x05BF, 0x05BF), (0x05C1, 0x05C2),

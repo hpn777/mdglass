@@ -1,6 +1,7 @@
 // mdv - super fast terminal markdown viewer.
 
 mod ansi;
+mod doc;
 mod pager;
 mod render;
 
