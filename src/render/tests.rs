@@ -1,14 +1,14 @@
 // Unit tests for the renderer and ANSI helpers.
 
 use super::*;
-use crate::ansi::{strip_ansi, wrap};
+use crate::ansi::{strip_ansi, visible_width, wrap, wrap_indent};
 
 fn cfg_plain() -> Cfg {
-    Cfg { color: false, width: 80, urls: true }
+    Cfg::new(false, 80, true)
 }
 
 fn cfg_color() -> Cfg {
-    Cfg { color: true, width: 80, urls: true }
+    Cfg::new(true, 80, true)
 }
 
 #[test]
@@ -137,4 +137,132 @@ fn wide_cjk_width() {
     assert_eq!(visible_width("a\u{301}"), 1);
 }
 
-use crate::ansi::visible_width;
+#[test]
+fn wrap_breaks_at_words() {
+    let s = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima";
+    let rows = wrap(s, 30);
+    for r in &rows {
+        assert!(visible_width(r) <= 30);
+        assert!(!r.starts_with(' '));
+    }
+    let words: Vec<&str> = rows.iter().flat_map(|r| r.split(' ')).collect();
+    assert_eq!(words, s.split(' ').collect::<Vec<_>>()); // no word was split
+}
+
+#[test]
+fn wrap_hard_splits_overlong_words() {
+    let rows = wrap(&"x".repeat(25), 10);
+    assert_eq!(rows.iter().map(|r| r.len()).collect::<Vec<_>>(), vec![10, 10, 5]);
+}
+
+#[test]
+fn wrap_reopens_256_colors_without_blink() {
+    let s = format!("\u{1b}[38;5;252;48;5;236m{}\u{1b}[0m", "word ".repeat(20));
+    let rows = wrap(&s, 30);
+    assert!(rows.len() > 1);
+    for r in &rows[1..] {
+        assert!(r.starts_with("\u{1b}[38;5;252;48;5;236m"), "row lost its style: {r:?}");
+        assert!(!r.contains("\u{1b}[5m"), "blink leaked into: {r:?}");
+    }
+    // a color index of 0 is not a reset
+    let s = format!("\u{1b}[38;5;0m{}", "word ".repeat(10));
+    assert!(wrap(&s, 20)[1].starts_with("\u{1b}[38;5;0m"));
+}
+
+#[test]
+fn wrap_closes_and_reopens_hyperlinks() {
+    let open = "\u{1b}]8;;https://x.io\u{1b}\\";
+    let s = format!("{open}{}\u{1b}]8;;\u{1b}\\", "link ".repeat(10));
+    let rows = wrap(&s, 20);
+    assert!(rows[0].contains("\u{1b}]8;;\u{1b}\\"));
+    assert!(rows[1].starts_with(open));
+}
+
+#[test]
+fn wrap_indent_hangs_continuations() {
+    let rows = wrap_indent("• one two three four five six", 12, "  ");
+    assert!(rows.len() > 1);
+    assert!(rows[1..].iter().all(|r| r.starts_with("  ") && !r.starts_with("   ")));
+}
+
+#[test]
+fn rendered_rows_fit_width() {
+    let doc = format!(
+        "# {h}\n\n{p}\n\n- {p}\n\n> {p}\n\n```\n{c}\n```\n",
+        h = "heading ".repeat(15),
+        p = "lorem ipsum ".repeat(20),
+        c = "let x = 1; ".repeat(15)
+    );
+    for cfg in [Cfg::new(true, 50, true), Cfg::new(false, 50, true)] {
+        for r in render(&doc, &cfg) {
+            assert!(visible_width(&r) <= 50, "{} cols: {r:?}", visible_width(&r));
+        }
+    }
+}
+
+#[test]
+fn list_continuation_rows_are_indented() {
+    let rows = render(&format!("- {}", "word ".repeat(30)), &Cfg::new(false, 40, true));
+    assert!(rows[0].starts_with("• "));
+    assert!(rows[1..].iter().all(|r| r.starts_with("  ")));
+}
+
+#[test]
+fn blockquote_bar_on_every_row() {
+    let rows = render(&format!("> {}", "word ".repeat(30)), &Cfg::new(false, 40, true));
+    assert!(rows.len() > 1);
+    assert!(rows.iter().all(|r| r.starts_with('┃')));
+}
+
+#[test]
+fn leading_hr_is_not_front_matter() {
+    let doc = "---\n# Visible Title\n\nimportant paragraph\n\n---\n\nend";
+    let joined = render(doc, &cfg_plain()).join("\n");
+    assert!(joined.contains("Visible Title"));
+    assert!(joined.contains("important paragraph"));
+}
+
+#[test]
+fn toml_front_matter_hidden() {
+    let doc = "+++\ntitle = \"x\"\n[extra]\nk = 1\n+++\nbody";
+    assert_eq!(render(doc, &cfg_plain()), vec!["body"]);
+}
+
+#[test]
+fn soft_breaks_join_and_hard_breaks_split() {
+    let rows = render("one\ntwo *em\nphasis*  \nthree\\\nfour", &cfg_plain());
+    assert_eq!(rows, vec!["one two em phasis", "three", "four"]);
+}
+
+#[test]
+fn paragraph_line_then_dashes_is_setext() {
+    let rows = render("intro\nTitle\n---\nbody", &cfg_plain());
+    assert_eq!(rows, vec!["intro", "", "## Title", "", "body"]);
+}
+
+#[test]
+fn reference_links_resolve() {
+    let doc = "[full][r] [collapsed][] [r] [nope]\n\n[r]: https://r.io\n[collapsed]: <https://c.io> \"title\"";
+    let rows = render(doc, &cfg_plain());
+    assert_eq!(rows, vec!["full (https://r.io) collapsed (https://c.io) r (https://r.io) [nope]"]);
+}
+
+#[test]
+fn indented_code_block() {
+    let rows = render("text\n\n    let x = 1;\n\n    let y = 2;\n\nafter", &cfg_plain());
+    assert_eq!(rows, vec!["text", "", "```", "let x = 1;", "", "let y = 2;", "```", "", "after"]);
+}
+
+#[test]
+fn indented_text_after_list_is_not_code() {
+    let rows = render("- item\n\n    more about item\n\nafter", &cfg_plain());
+    assert!(!rows.iter().any(|r| r == "```"));
+    assert!(rows.iter().any(|r| r.trim() == "more about item"));
+}
+
+#[test]
+fn multiline_html_comment_hidden() {
+    let rows = render("a\n\n<!--\nsecret\n-->\n\nb", &cfg_plain());
+    assert!(!rows.iter().any(|r| r.contains("secret")));
+    assert!(rows.contains(&"b".to_string()));
+}

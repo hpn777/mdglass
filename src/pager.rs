@@ -1,5 +1,7 @@
-// Built-in pager: less-style key bindings, incremental search with match
-// highlighting, multi-file navigation, and resize-aware redraw.
+// Built-in pager: less-style key bindings, search with match highlighting,
+// multi-file navigation, and resize-aware redraw on the alternate screen.
+// `Pager` holds all state and turns keys into frames; `run` only shuttles
+// bytes between it and the terminal, so the logic is testable without a TTY.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -13,6 +15,23 @@ use termion::{async_stdin, AsyncReader};
 use crate::ansi::{map_visible, pad_to, sg, strip_ansi, truncate_to, visible_width, wrap, RESET};
 use crate::render::{render, Cfg};
 
+/// Decode raw terminal input. termion reports a bare ESC as a parse error, so
+/// an ESC with nothing (or another ESC) after it is mapped to `Key::Esc` here.
+pub fn parse_bytes(bytes: &[u8]) -> Vec<Event> {
+    let mut events = Vec::new();
+    let mut iter = bytes.iter().copied().map(Ok::<u8, io::Error>).peekable();
+    while let Some(Ok(b)) = iter.next() {
+        if b == 0x1b && matches!(iter.peek(), None | Some(Ok(0x1b))) {
+            events.push(Event::Key(Key::Esc));
+            continue;
+        }
+        if let Ok(e) = parse_event(b, &mut iter) {
+            events.push(e);
+        }
+    }
+    events
+}
+
 /// Non-blocking key pump over the controlling TTY (works even when stdin is piped).
 struct Input {
     reader: AsyncReader,
@@ -20,353 +39,346 @@ struct Input {
 }
 
 impl Input {
-    fn new() -> Input {
-        Input { reader: async_stdin(), queue: VecDeque::new() }
-    }
-
     fn poll(&mut self) -> Option<Event> {
         while self.queue.is_empty() {
             let mut buf = [0u8; 256];
             match self.reader.read(&mut buf) {
                 Ok(0) | Err(_) => return None,
-                Ok(n) => {
-                    let mut iter = buf[..n].iter().copied().map(Ok::<u8, io::Error>);
-                    while let Some(Ok(b)) = iter.next() {
-                        match parse_event(b, &mut iter) {
-                            Ok(e) => self.queue.push_back(e),
-                            Err(_) => break,
-                        }
-                    }
-                }
+                Ok(n) => self.queue.extend(parse_bytes(&buf[..n])),
             }
         }
         self.queue.pop_front()
     }
 }
 
-
-pub struct FileDoc {
+struct FileDoc {
     name: String,
     content: String,
-    lines: Vec<String>, // styled rows, already wrapped to terminal width
-    plain: Vec<String>, // lowercase, escape-free text (one entry per line) for search
+    lines: Vec<String>, // styled rows, already fitted to the terminal width
+    plain: Vec<String>, // case-folded, escape-free text of each row, for search
     top: usize,
 }
 
-fn fit(doc: &mut FileDoc, width: usize) {
-    let cfg = Cfg { color: true, width, urls: true };
-    let logical = render(&doc.content, &cfg);
-    doc.lines = logical.iter().flat_map(|l| wrap(l, width.max(1))).collect();
-    doc.plain = doc.lines.iter().map(|l| strip_ansi(l).to_lowercase()).collect();
-    doc.top = doc.top.min(doc.lines.len().saturating_sub(1));
+/// Lowercase one char to one char, so folded text keeps the same char indices.
+fn fold(s: &str) -> String {
+    s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
 }
 
-pub fn run(files: &[(String, String)]) -> io::Result<()> {
-    let stdout = io::stdout();
-    let raw = stdout.into_raw_mode()?;
-    let mut out = raw.lock();
-    let mut input = Input::new();
+pub struct Pager {
+    docs: Vec<FileDoc>,
+    file: usize,
+    color: bool,
+    urls: bool,
+    width: usize,
+    height: usize,
+    needle: String,
+    search: Option<(String, bool)>, // prompt text, searching backward
+    last_match: Option<usize>,
+    msg: Option<String>,
+    pending_g: bool,
+}
 
-    let (mut term_w, mut term_h) = termion::terminal_size().unwrap_or((80, 24));
-    write!(out, "\u{1b}[s\u{1b}[?25l")?;
-
-    let mut docs: Vec<FileDoc> = files
-        .iter()
-        .map(|(name, content)| FileDoc {
-            name: name.clone(),
-            content: content.clone(),
-            lines: Vec::new(),
-            plain: Vec::new(),
-            top: 0,
-        })
-        .collect();
-    for d in docs.iter_mut() {
-        fit(d, term_w as usize);
+impl Pager {
+    pub fn new(files: &[(String, String)], color: bool, urls: bool, width: usize, height: usize) -> Pager {
+        let docs = files
+            .iter()
+            .map(|(name, content)| FileDoc {
+                name: name.clone(),
+                content: content.clone(),
+                lines: Vec::new(),
+                plain: Vec::new(),
+                top: 0,
+            })
+            .collect();
+        let mut p = Pager {
+            docs,
+            file: 0,
+            color,
+            urls,
+            width: 0,
+            height: 0,
+            needle: String::new(),
+            search: None,
+            last_match: None,
+            msg: None,
+            pending_g: false,
+        };
+        p.resize(width, height);
+        p
     }
 
-    let mut file = 0usize;
-    let mut needle = String::new();
-    let mut search: Option<String> = None;
-    let mut msg: Option<String> = None;
-    let mut pending_g = false;
-    let mut dirty = true;
-    let mut quit = false;
+    pub fn resize(&mut self, width: usize, height: usize) {
+        let width = width.max(1);
+        if width != self.width {
+            let cfg = Cfg::new(self.color, width, self.urls);
+            for d in self.docs.iter_mut() {
+                // render() wraps to `width`; wrap() again only guards rows that cannot shrink
+                d.lines = render(&d.content, &cfg).iter().flat_map(|l| wrap(l, width)).collect();
+                d.plain = d.lines.iter().map(|l| fold(&strip_ansi(l))).collect();
+            }
+        }
+        self.width = width;
+        self.height = height.max(2);
+        let vh = self.vh();
+        for d in self.docs.iter_mut() {
+            d.top = d.top.min(d.lines.len().saturating_sub(vh));
+        }
+    }
 
-    while !quit {
-        let vh = (term_h as usize).saturating_sub(1).max(1);
+    fn vh(&self) -> usize {
+        self.height - 1
+    }
+
+    fn max_top(&self) -> usize {
+        self.docs[self.file].lines.len().saturating_sub(self.vh())
+    }
+
+    fn scroll(&mut self, delta: isize) {
+        let max = self.max_top() as isize;
+        let d = &mut self.docs[self.file];
+        d.top = (d.top as isize + delta).clamp(0, max) as usize;
+    }
+
+    fn switch(&mut self, file: usize) {
+        self.file = file;
+        self.docs[file].top = 0;
+        self.last_match = None;
+    }
+
+    /// Jump to the next (or previous) match. Continues from the last match
+    /// while it is on screen, otherwise from the top of the screen.
+    fn jump(&mut self, back: bool) {
+        let vh = self.vh();
+        let d = &self.docs[self.file];
+        let n = d.plain.len();
+        if n == 0 || self.needle.is_empty() {
+            return;
+        }
+        let from = match self.last_match {
+            Some(m) if m >= d.top && m < d.top + vh => {
+                if back {
+                    m + n - 1
+                } else {
+                    m + 1
+                }
+            }
+            _ => {
+                if back {
+                    d.top + n - 1
+                } else {
+                    d.top
+                }
+            }
+        } % n;
+        let hit = (0..n)
+            .map(|k| if back { (from + n - k) % n } else { (from + k) % n })
+            .find(|&idx| d.plain[idx].contains(&self.needle));
+        match hit {
+            None => self.msg = Some(format!("pattern not found: {}", self.needle)),
+            Some(idx) => {
+                if back && idx > from {
+                    self.msg = Some("search hit top, continuing at bottom".into());
+                } else if !back && idx < from {
+                    self.msg = Some("search hit bottom, continuing at top".into());
+                }
+                self.last_match = Some(idx);
+                let top = idx.saturating_sub(vh / 3).min(self.max_top());
+                self.docs[self.file].top = top;
+            }
+        }
+    }
+
+    /// Handle one key. Returns false when the pager should exit.
+    pub fn key(&mut self, k: Key) -> bool {
+        if let Some((buf, back)) = self.search.as_mut() {
+            match k {
+                Key::Char('\n') => {
+                    let pat = fold(buf.trim());
+                    let back = *back;
+                    self.search = None;
+                    if !pat.is_empty() {
+                        self.needle = pat;
+                        self.last_match = None;
+                        self.jump(back);
+                    }
+                }
+                Key::Char(c) if !c.is_control() => buf.push(c),
+                Key::Backspace | Key::Ctrl('h') => {
+                    if buf.pop().is_none() {
+                        self.search = None;
+                    }
+                }
+                Key::Ctrl('u') => buf.clear(),
+                Key::Esc | Key::Ctrl('c') => self.search = None,
+                _ => {}
+            }
+            return true;
+        }
+
+        self.msg = None;
+        let g = std::mem::take(&mut self.pending_g);
+        let vh = self.vh() as isize;
+        let half = (vh / 2).max(1);
+        match k {
+            Key::Char('q') | Key::Char('Q') | Key::Esc | Key::Ctrl('c') => {
+                if self.file + 1 < self.docs.len() {
+                    self.switch(self.file + 1);
+                } else {
+                    return false;
+                }
+            }
+            Key::Char('j') | Key::Char('\n') | Key::Down | Key::Ctrl('e') | Key::Ctrl('n') => self.scroll(1),
+            Key::Char('k') | Key::Up | Key::Ctrl('y') | Key::Ctrl('p') => self.scroll(-1),
+            Key::Char('d') | Key::Ctrl('d') => self.scroll(half),
+            Key::Char('u') | Key::Ctrl('u') => self.scroll(-half),
+            Key::Char('f') | Key::Char(' ') | Key::Ctrl('f') | Key::PageDown => self.scroll(vh),
+            Key::Char('b') | Key::Ctrl('b') | Key::PageUp => self.scroll(-vh),
+            Key::Char('g') if g => self.docs[self.file].top = 0,
+            Key::Char('g') => self.pending_g = true,
+            Key::Home | Key::Char('<') => self.docs[self.file].top = 0,
+            Key::Char('G') | Key::End | Key::Char('>') => self.docs[self.file].top = self.max_top(),
+            Key::Char('/') => self.search = Some((String::new(), false)),
+            Key::Char('?') => self.search = Some((String::new(), true)),
+            Key::Char('n') => self.jump(false),
+            Key::Char('N') => self.jump(true),
+            Key::Char(']') => self.switch((self.file + 1) % self.docs.len()),
+            Key::Char('[') => self.switch((self.file + self.docs.len() - 1) % self.docs.len()),
+            _ => {}
+        }
+        true
+    }
+
+    /// The full screen: content rows plus the status line, drawn from home.
+    pub fn frame(&self) -> String {
+        let vh = self.vh();
+        let d = &self.docs[self.file];
+        let mut buf = String::with_capacity(vh * (self.width + 16));
+        buf.push_str("\u{1b}[H");
+        for row in 0..vh {
+            // clear first: EL after a full-width row would erase its last column
+            buf.push_str("\u{1b}[K");
+            let li = d.top + row;
+            if let Some(line) = d.lines.get(li) {
+                if self.needle.is_empty() {
+                    buf.push_str(line);
+                } else {
+                    highlight_line(line, &d.plain[li], &self.needle, &mut buf);
+                }
+            }
+            buf.push_str(RESET);
+            buf.push_str("\r\n");
+        }
+        buf.push_str("\u{1b}[K");
+        buf.push_str(&self.status_line());
+        buf
+    }
+
+    fn status_line(&self) -> String {
+        let d = &self.docs[self.file];
+        let left = if let Some((pat, back)) = &self.search {
+            format!(" {}{pat}\u{2588}", if *back { '?' } else { '/' })
+        } else if let Some(msg) = &self.msg {
+            format!(" {}⚠ {msg}{RESET}{}", sg("1;38;5;221;48;5;236"), sg("38;5;252;48;5;236"))
+        } else {
+            let total = d.lines.len();
+            let vh = self.vh();
+            let pct = if total == 0 || d.top + vh >= total { 100 } else { (d.top + vh) * 100 / total };
+            let multi = if self.docs.len() > 1 {
+                format!(" [{}/{}]", self.file + 1, self.docs.len())
+            } else {
+                String::new()
+            };
+            format!(" {}{multi}  {pct:>3}%  {}/{} lines", d.name, (d.top + 1).min(total.max(1)), total)
+        };
+        let help = if self.docs.len() > 1 {
+            "q quit · / ? search · n N match · [ ] file "
+        } else {
+            "q quit · / ? search · n N match "
+        };
+        // one column short of the edge so the terminal never scrolls
+        let width = self.width.saturating_sub(1);
+        let left = truncate_to(&left, width);
+        let gap = width.saturating_sub(visible_width(&left) + visible_width(help));
+        let line = if gap >= 2 { format!("{left}{}{help}", " ".repeat(gap)) } else { left };
+        format!("{}{}{RESET}", sg("38;5;252;48;5;236"), pad_to(&line, width))
+    }
+}
+
+/// Reverse-video every occurrence of `needle`, matched against the parallel
+/// folded plain-text row. Each matched char gets its own SGR pair so styles
+/// reset inside the match cannot cancel the highlight.
+fn highlight_line(styled: &str, plain: &str, needle: &str, out: &mut String) {
+    let p: Vec<char> = plain.chars().collect();
+    let nd: Vec<char> = needle.chars().collect();
+    let mut mark = vec![false; p.len()];
+    let mut i = 0;
+    while !nd.is_empty() && i + nd.len() <= p.len() {
+        if p[i..i + nd.len()] == nd[..] {
+            mark[i..i + nd.len()].fill(true);
+            i += nd.len();
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&map_visible(styled, |c, o, idx| {
+        if mark.get(idx) == Some(&true) {
+            o.push_str("\u{1b}[7m");
+            o.push(c);
+            o.push_str("\u{1b}[27m");
+        } else {
+            o.push(c);
+        }
+    }));
+}
+
+/// Leaves the alternate screen and shows the cursor on every exit path; it is
+/// declared after the raw-mode guard so it runs before raw mode is undone.
+struct AltScreen;
+
+impl Drop for AltScreen {
+    fn drop(&mut self) {
+        let mut o = io::stdout();
+        let _ = o.write_all(b"\x1b[0m\x1b[?25h\x1b[?1049l");
+        let _ = o.flush();
+    }
+}
+
+pub fn run(files: &[(String, String)], color: bool, urls: bool) -> io::Result<()> {
+    let (w, h) = termion::terminal_size().unwrap_or((80, 24));
+    let mut pager = Pager::new(files, color, urls, w as usize, h as usize);
+    let mut out = io::stdout().into_raw_mode()?;
+    out.write_all(b"\x1b[?1049h\x1b[?25l")?;
+    let _screen = AltScreen;
+    let mut input = Input { reader: async_stdin(), queue: VecDeque::new() };
+    let mut size = (w, h);
+    let mut dirty = true;
+    loop {
         if dirty {
-            draw(&mut out, &docs[file], file, docs.len(), vh, term_w as usize, &needle, &search, msg.as_deref())?;
+            out.write_all(pager.frame().as_bytes())?;
+            out.flush()?;
             dirty = false;
         }
         match input.poll() {
+            Some(Event::Key(k)) => {
+                if !pager.key(k) {
+                    return Ok(());
+                }
+                dirty = true;
+            }
+            Some(_) => {}
             None => {
-                if let Ok((w, h)) = termion::terminal_size() {
-                    if w != term_w || h != term_h {
-                        term_w = w;
-                        term_h = h;
-                        for d in docs.iter_mut() {
-                            fit(d, w as usize);
-                        }
+                if let Ok(now) = termion::terminal_size() {
+                    if now != size {
+                        size = now;
+                        pager.resize(now.0 as usize, now.1 as usize);
                         dirty = true;
                     }
                 }
                 sleep(Duration::from_millis(15));
-                continue;
-            }
-            Some(Event::Key(k)) => {
-                if let Some(buf) = search.as_mut() {
-                    match k {
-                        Key::Char(c) if !c.is_control() => {
-                            buf.push(c);
-                            dirty = true;
-                        }
-                        Key::Backspace | Key::Ctrl('u') => {
-                            buf.pop();
-                            dirty = true;
-                        }
-                        Key::Esc => {
-                            search = None;
-                            dirty = true;
-                        }
-                        Key::Char('\r') => {
-                            let pat = buf.trim().to_lowercase();
-                            search = None;
-                            if !pat.is_empty() {
-                                needle = pat.clone();
-                                let d = &mut docs[file];
-                                let found = find_match(d, &needle, d.top + 1, vh, true);
-                                if !found {
-                                    msg = Some(format!("pattern not found: {pat}"));
-                                }
-                            }
-                            dirty = true;
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-                msg = None;
-                let d = &mut docs[file];
-                let max_top = d.lines.len().saturating_sub(vh);
-                let scroll = |d: &mut FileDoc, delta: isize| {
-                    let next = (d.top as isize + delta).clamp(0, max_top as isize) as usize;
-                    d.top = next;
-                };
-                if !matches!(k, Key::Char('g')) {
-                    pending_g = false;
-                }
-                match k {
-                    Key::Char('q') | Key::Char('Q') | Key::Esc | Key::Ctrl('c') | Key::Ctrl('z') => {
-                        if file + 1 < docs.len() {
-                            file += 1;
-                            needle.clear();
-                            docs[file].top = 0;
-                        } else {
-                            quit = true;
-                        }
-                    }
-                    Key::Char('j') | Key::Char('l') | Key::Down | Key::Right | Key::Char(' ') => {
-                        scroll(d, if matches!(k, Key::Char(' ')) { vh as isize } else { 1 });
-                        dirty = true;
-                    }
-                    Key::Char('k') | Key::Char('h') | Key::Up | Key::Left => {
-                        scroll(d, -1);
-                        dirty = true;
-                    }
-                    Key::Ctrl('d') => {
-                        scroll(d, (vh / 2).max(1) as isize);
-                        dirty = true;
-                    }
-                    Key::Ctrl('u') => {
-                        scroll(d, -((vh / 2).max(1) as isize));
-                        dirty = true;
-                    }
-                    Key::Ctrl('f') => {
-                        scroll(d, vh as isize);
-                        dirty = true;
-                    }
-                    Key::Ctrl('b') => {
-                        scroll(d, -(vh as isize));
-                        dirty = true;
-                    }
-                    Key::Char('g') => {
-                        if pending_g {
-                            d.top = 0;
-                            pending_g = false;
-                            dirty = true;
-                        } else {
-                            pending_g = true;
-                        }
-                    }
-                    Key::Char('G') | Key::End => {
-                        d.top = max_top;
-                        dirty = true;
-                    }
-                    Key::Home => {
-                        d.top = 0;
-                        dirty = true;
-                    }
-                    Key::Char('/') | Key::Char('?') => {
-                        search = Some(String::new());
-                        dirty = true;
-                    }
-                    Key::Char('n') if !needle.is_empty() => {
-                        if !find_match(d, &needle, d.top + 1, vh, true) {
-                            msg = Some(format!("no more matches: {needle}"));
-                        }
-                        dirty = true;
-                    }
-                    Key::Char('N') if !needle.is_empty() => {
-                        if !find_match(d, &needle, d.top, vh, false) {
-                            msg = Some(format!("no more matches: {needle}"));
-                        }
-                        dirty = true;
-                    }
-                    Key::Char(']') => {
-                        file = (file + 1) % docs.len();
-                        docs[file].top = 0;
-                        dirty = true;
-                    }
-                    Key::Char('[') => {
-                        file = (file + docs.len() - 1) % docs.len();
-                        docs[file].top = 0;
-                        dirty = true;
-                    }
-                    _ => {}
-                }
-            }
-            Some(_) => {}
-        }
-    }
-
-    write!(out, "{RESET}\u{1b}[?25h\u{1b}[u")?;
-    out.flush()?;
-    Ok(())
-}
-
-/// Wrap-around search. `forward` scans down from `from`; otherwise up from it.
-fn find_match(d: &mut FileDoc, needle: &str, from: usize, vh: usize, forward: bool) -> bool {
-    let n = d.plain.len();
-    if n == 0 || needle.is_empty() {
-        return false;
-    }
-    for k in 0..n {
-        let idx = if forward {
-            (from + k) % n
-        } else {
-            (from + n - k.max(1)) % n
-        };
-        if d.plain[idx].contains(needle) {
-            d.top = idx.saturating_sub(vh / 3).min(n.saturating_sub(1));
-            return true;
-        }
-    }
-    false
-}
-
-fn draw(
-    out: &mut impl Write,
-    doc: &FileDoc,
-    index: usize,
-    nfiles: usize,
-    vh: usize,
-    width: usize,
-    needle: &str,
-    search: &Option<String>,
-    msg: Option<&str>,
-) -> io::Result<()> {
-    let max_top = doc.lines.len().saturating_sub(vh);
-    let top = doc.top.min(max_top);
-    let mut buf = String::with_capacity(vh * (width + 8));
-    buf.push_str("\u{1b}[u"); // home position saved at startup
-    for row in 0..vh {
-        let li = top + row;
-        if let Some(line) = doc.lines.get(li) {
-            if needle.is_empty() {
-                buf.push_str(line);
-            } else {
-                highlight_line(line, &doc.plain[li], needle, &mut buf);
             }
         }
-        buf.push_str("\u{1b}[0m\u{1b}[K");
-        if row + 1 < vh {
-            buf.push_str("\r\n");
-        }
     }
-    buf.push_str("\r\n");
-    buf.push_str(&status_line(doc, index, nfiles, top, vh, width, needle, search, msg));
-    buf.push_str("\u{1b}[0m\u{1b}[J");
-    out.write_all(buf.as_bytes())?;
-    out.flush()
 }
 
-fn status_line(
-    doc: &FileDoc,
-    index: usize,
-    nfiles: usize,
-    top: usize,
-    vh: usize,
-    width: usize,
-    needle: &str,
-    search: &Option<String>,
-    msg: Option<&str>,
-) -> String {
-    let _ = needle;
-    let base = sg("38;5;252;48;5;236");
-    let left = if let Some(msg) = msg {
-        format!("{}⚠ {msg}{RESET}", sg("1;38;5;221;48;5;236"))
-    } else if let Some(pat) = search {
-        format!(" /{pat}\u{2588}")
-    } else {
-        let total = doc.lines.len();
-        let pct = if total == 0 || top + vh >= total { 100 } else { (top + vh) * 100 / total };
-        let multi = if nfiles > 1 { format!(" [{}/{nfiles}]", index + 1) } else { String::new() };
-        format!(
-            " {}{multi}  {pct:>3}%  {}/{} lines",
-            doc.name,
-            top.min(total.saturating_sub(1)) + 1,
-            total
-        )
-    };
-    let help = "q quit · / search · n next · gg/G jump · [ ] files";
-    let left = truncate_to(&left, width);
-    let gap = width.saturating_sub(visible_width(&left) + visible_width(help));
-    let line = if gap >= 2 {
-        format!("{left}{}{help}", " ".repeat(gap))
-    } else {
-        left
-    };
-    format!("{}{}{RESET}", base, pad_to(&line, width))
-}
-
-/// Overlay reverse-video on every occurrence of `needle` (matched against the
-/// parallel plain-text line so ANSI codes never shift offsets).
-fn highlight_line(styled: &str, plain: &str, needle: &str, out: &mut String) {
-    let chars: Vec<char> = plain.chars().collect();
-    let mut starts = vec![false; chars.len()];
-    let mut ends = vec![false; chars.len()];
-    let mut from = 0usize;
-    while let Some(pos) = plain[from..].find(needle) {
-        let byte_start = from + pos;
-        let cstart = plain[..byte_start].chars().count();
-        let clen = needle.chars().count();
-        for k in 0..clen {
-            if let Some(i) = cstart.checked_add(k) {
-                if i < starts.len() {
-                    starts[i] |= k == 0;
-                    ends[i] |= k + 1 == clen;
-                }
-            }
-        }
-        from = byte_start + needle.len();
-    }
-    out.push_str(&map_visible(styled, |c, o, p| {
-        if p < starts.len() && starts[p] {
-            o.push_str("\u{1b}[7m");
-        }
-        o.push(c);
-        if p < ends.len() && ends[p] {
-            o.push_str("\u{1b}[27m");
-        }
-    }));
-}
+#[cfg(test)]
+mod tests;

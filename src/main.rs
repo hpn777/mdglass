@@ -17,28 +17,32 @@ USAGE:
 
 OPTIONS:
     -n, --no-pager    print rendered output to stdout (no interactive pager)
-    -c, --plain       no colors (plain text)
+    -c, --plain       no colors (default when stdout is not a terminal)
+        --color       force colors, e.g. `mdv -n --color FILE | less -R`
         --no-urls     don't show link URLs next to link text
     -h, --help        print this help
     -V, --version     print version
 
 KEYS:
-    j/k  ↑/↓   line scroll      g/G or gg   top / bottom
-    d/u  half page              f/b or SP   full page
-    /    search (n / N next / previous)     [ ]   next / previous file
-    Home/End  jump              q           quit (advances to next file)
+    j k  ↓ ↑  Enter     line down / up
+    d u  Ctrl-D Ctrl-U  half page down / up
+    f b  Space  PgDn PgUp  page down / up
+    gg G  Home End      top / bottom
+    / ?                 search forward / backward (case-insensitive)
+    n N                 next / previous match
+    ] [                 next / previous file
+    q Esc               quit (moves on to the next file, if any)
 ";
 
 fn main() {
     let mut paths: Vec<String> = Vec::new();
     let mut no_pager = false;
-    let mut color = std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb");
+    let mut forced_color: Option<bool> = None;
     let mut urls = true;
 
-    let mut args = std::env::args().skip(1).peekable();
     let stdin_piped = !termion::is_tty(&io::stdin());
     let stdout_tty = termion::is_tty(&io::stdout());
-    while let Some(a) = args.next() {
+    for a in std::env::args().skip(1) {
         match a.as_str() {
             "-h" | "--help" => {
                 print!("{HELP}");
@@ -49,7 +53,8 @@ fn main() {
                 return;
             }
             "-n" | "--no-pager" => no_pager = true,
-            "-c" | "--plain" | "--no-color" => color = false,
+            "-c" | "--plain" | "--no-color" => forced_color = Some(false),
+            "--color" => forced_color = Some(true),
             "--no-urls" => urls = false,
             "-" => paths.push("-".into()),
             _ if a.starts_with('-') && a.len() > 1 => {
@@ -59,6 +64,9 @@ fn main() {
             _ => paths.push(a),
         }
     }
+    let color = forced_color.unwrap_or_else(|| {
+        stdout_tty && std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb")
+    });
     if paths.is_empty() {
         if stdin_piped {
             paths.push("-".into());
@@ -71,41 +79,31 @@ fn main() {
     let mut files: Vec<(String, String)> = Vec::new();
     let mut failed = false;
     for path in &paths {
-        let content = if path == "-" {
-            let mut buf = String::new();
-            match io::stdin().read_to_string(&mut buf) {
-                Ok(_) => buf,
-                Err(e) => {
-                    eprintln!("mdv: stdin: {e}");
-                    failed = true;
-                    continue;
-                }
-            }
+        let bytes = if path == "-" {
+            let mut buf = Vec::new();
+            io::stdin().read_to_end(&mut buf).map(|_| buf)
         } else {
-            match std::fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("mdv: {path}: {e}");
-                    failed = true;
-                    continue;
-                }
-            }
+            std::fs::read(path)
         };
-        files.push((path.clone(), content));
+        match bytes {
+            // invalid UTF-8 (e.g. Latin-1 files) is shown with replacement chars
+            Ok(b) => files.push((path.clone(), String::from_utf8_lossy(&b).into_owned())),
+            Err(e) => {
+                eprintln!("mdv: {}: {e}", if path == "-" { "stdin" } else { path });
+                failed = true;
+            }
+        }
     }
     if files.is_empty() {
         std::process::exit(if failed { 1 } else { 2 });
     }
 
-    if !color {
-        no_pager = true;
-    }
     if no_pager || !stdout_tty {
         print_plain(&files, color, urls);
-    } else if let Err(e) = pager::run(&files) {
+    } else if let Err(e) = pager::run(&files, color, urls) {
         // No usable terminal for raw mode: fall back to a plain dump.
         eprintln!("mdv: pager unavailable ({e}), printing instead");
-        print_plain(&files, false, urls);
+        print_plain(&files, color, urls);
     }
     if failed {
         std::process::exit(1);
@@ -113,8 +111,8 @@ fn main() {
 }
 
 fn print_plain(files: &[(String, String)], color: bool, urls: bool) {
-    let width = if color { termion::terminal_size().map(|(w, _)| w as usize).unwrap_or(80) } else { 80 };
-    let cfg = Cfg { color, width, urls };
+    let width = termion::terminal_size().map(|(w, _)| w as usize).unwrap_or(80);
+    let cfg = Cfg::new(color, width, urls);
     let stdout = io::stdout();
     let mut out = stdout.lock();
     for (name, content) in files.iter() {

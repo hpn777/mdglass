@@ -4,18 +4,45 @@
 // ordered, task lists), links (with OSC 8 hyperlinks), images, tables,
 // horizontal rules, entities, and front-matter.
 
-use crate::ansi::{pad_to, restyled, sg, truncate_to, visible_width, wrap, RESET};
+use std::collections::HashMap;
 
+use crate::ansi::{pad_to, restyled, sg, truncate_to, visible_width, wrap, wrap_indent, RESET};
+
+#[derive(Clone, Default)]
 pub struct Cfg {
     pub color: bool,
     pub width: usize,
     pub urls: bool,
+    /// Reference-link definitions (`[label]: url`), keyed by normalized label.
+    pub refs: HashMap<String, String>,
 }
 
 impl Cfg {
-    fn narrow(&self, by: usize) -> Cfg {
-        Cfg { color: self.color, width: self.width.saturating_sub(by).max(20), urls: self.urls }
+    pub fn new(color: bool, width: usize, urls: bool) -> Cfg {
+        Cfg { color, width, urls, refs: HashMap::new() }
     }
+
+    fn narrow(&self, by: usize) -> Cfg {
+        Cfg { width: self.width.saturating_sub(by).max(20), ..self.clone() }
+    }
+}
+
+fn ref_key(label: &str) -> String {
+    label.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// Parse a reference definition line: `[label]: url "optional title"`.
+fn ref_def(l: &str) -> Option<(String, String)> {
+    if l.len() - l.trim_start().len() > 3 {
+        return None;
+    }
+    let rest = l.trim_start().strip_prefix('[')?;
+    let (label, after) = rest.split_once("]:")?;
+    if label.trim().is_empty() || label.starts_with('^') {
+        return None;
+    }
+    let url = after.split_whitespace().next()?.trim_start_matches('<').trim_end_matches('>');
+    Some((ref_key(label), url.to_string()))
 }
 
 fn st(cfg: &Cfg, code: &str, text: &str) -> String {
@@ -144,8 +171,22 @@ fn parse_bracket(ch: &[char], i: usize, cfg: &Cfg, out: &mut String) -> Option<u
         }
         j += 1;
     }
-    if j >= ch.len() || ch.get(j + 1) != Some(&'(') {
+    if j >= ch.len() {
         return None;
+    }
+    let label: String = ch[o + 1..j].iter().collect();
+    if ch.get(j + 1) != Some(&'(') {
+        // reference forms: [text][ref], [text][], [ref]
+        let (key, next) = if ch.get(j + 1) == Some(&'[') {
+            let close = (j + 2..ch.len()).find(|&k| ch[k] == ']')?;
+            let r: String = ch[j + 2..close].iter().collect();
+            (if r.trim().is_empty() { label.clone() } else { r }, close + 1)
+        } else {
+            (label.clone(), j + 1)
+        };
+        let target = cfg.refs.get(&ref_key(&key))?.clone();
+        emit_link(&label, &target, img, cfg, out);
+        return Some(next);
     }
     let mut pd = 1usize;
     let mut k = j + 2;
@@ -167,17 +208,21 @@ fn parse_bracket(ch: &[char], i: usize, cfg: &Cfg, out: &mut String) -> Option<u
         return None;
     }
     let target: String = ch[j + 2..k].iter().collect();
-    let target = target.split_whitespace().next().unwrap_or("").trim_matches('<');
-    let label: String = ch[o + 1..j].iter().collect();
+    let target = target.split_whitespace().next().unwrap_or("").trim_matches(['<', '>']);
+    emit_link(&label, target, img, cfg, out);
+    Some(k + 1)
+}
+
+fn emit_link(label: &str, target: &str, img: bool, cfg: &Cfg, out: &mut String) {
     if img {
         out.push_str(&st(cfg, "38;5;175", "◈ "));
-        let alt = if label.trim().is_empty() { target } else { &label };
+        let alt = if label.trim().is_empty() { target } else { label };
         out.push_str(&st(cfg, "2;3", alt));
         if cfg.urls && cfg.color && !label.trim().is_empty() && !target.is_empty() {
             out.push_str(&st(cfg, "2", &format!(" ({target})")));
         }
     } else {
-        let text = inline(&label, cfg);
+        let text = inline(label, cfg);
         if cfg.color {
             let clean: String =
                 target.chars().filter(|c| *c != '\u{7}' && *c != '\u{1b}').collect();
@@ -192,7 +237,6 @@ fn parse_bracket(ch: &[char], i: usize, cfg: &Cfg, out: &mut String) -> Option<u
             out.push_str(&st(cfg, "2", &format!(" ({target})")));
         }
     }
-    Some(k + 1)
 }
 
 /// Render inline markdown (emphasis, code, links, images, entities, escapes,
@@ -361,26 +405,64 @@ fn find_angle(ch: &[char], i: usize) -> Option<usize> {
 pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
     let normalized = src.replace('\t', "    ").replace("\r\n", "\n").replace('\r', "\n");
     let lines: Vec<&str> = normalized.split('\n').collect();
-    let mut out: Vec<String> = Vec::new();
-    let mut i = 0usize;
-
-    // YAML/TOML front matter
-    if lines.first().map(|l| l.trim()) == Some("---") || lines.first().map(|l| l.trim()) == Some("+++") {
-        let fence = lines[0].trim();
-        if let Some(end) = (1..lines.len()).find(|&k| lines[k].trim() == fence) {
-            i = end + 1;
+    let body = &lines[front_matter_end(&lines).map(|e| e + 1).unwrap_or(0)..];
+    let mut cfg = cfg.clone();
+    for l in body {
+        if let Some((k, v)) = ref_def(l) {
+            cfg.refs.entry(k).or_insert(v);
         }
     }
+    let mut out = blocks(body, &cfg);
+    while out.last().map(|l| l.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out
+}
 
-    let push_blank = |out: &mut Vec<String>| {
-        if !out.is_empty() && !out.last().map(|l| l.is_empty()).unwrap_or(false) {
-            out.push(String::new());
-        }
+/// YAML (`---`) or TOML (`+++`) front matter: only when every line between the
+/// fences looks like a key/value pair, a list item, or a continuation, so a
+/// document that merely opens with a horizontal rule is left alone.
+fn front_matter_end(lines: &[&str]) -> Option<usize> {
+    let fence = lines.first()?.trim();
+    let sep = match fence {
+        "---" => ':',
+        "+++" => '=',
+        _ => return None,
     };
+    let end = (1..lines.len()).find(|&k| lines[k].trim() == fence)?;
+    let keyed = |l: &str| {
+        let key: String = l.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect();
+        !key.is_empty() && l[key.len()..].trim_start().starts_with(sep)
+    };
+    let body = &lines[1..end];
+    let ok = body.iter().any(|l| keyed(l))
+        && body.iter().all(|l| {
+            l.trim().is_empty()
+                || keyed(l)
+                || l.starts_with(' ')
+                || l.starts_with("- ")
+                || (sep == '=' && l.starts_with('['))
+        });
+    ok.then_some(end)
+}
+
+fn push_blank(out: &mut Vec<String>) {
+    if !out.is_empty() && !out.last().map(|l| l.is_empty()).unwrap_or(false) {
+        out.push(String::new());
+    }
+}
+
+fn blocks(lines: &[&str], cfg: &Cfg) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    let mut in_list = false;
 
     while i < lines.len() {
         let line = lines[i];
         let t = line.trim();
+        if !t.is_empty() && !line.starts_with(' ') && list_item(line).is_none() {
+            in_list = false;
+        }
 
         // fenced code
         if t.starts_with("```") || t.starts_with("~~~") {
@@ -396,7 +478,7 @@ pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
                     i += 1;
                     break;
                 }
-                out.push(code_line(cfg, &lines[i].replace('\t', "    "), &mut in_block));
+                out.extend(code_lines(cfg, lines[i], &mut in_block));
                 i += 1;
             }
             out.push(fence_bottom(cfg));
@@ -409,12 +491,27 @@ pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
             continue;
         }
 
+        // HTML comments, possibly spanning lines
+        if t.starts_with("<!--") {
+            while i < lines.len() && !lines[i].contains("-->") {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        if ref_def(line).is_some() {
+            i += 1;
+            continue;
+        }
+
         // ATX heading
         if t.starts_with('#') {
             let lvl = t.chars().take_while(|&c| c == '#').count();
             if lvl <= 6 && (t.len() == lvl || t.as_bytes()[lvl] == b' ') {
+                let text = t[lvl..].trim().trim_end_matches('#').trim_end();
                 push_blank(&mut out);
-                out.push(heading(cfg, lvl, t[lvl..].trim()));
+                out.extend(heading(cfg, lvl, text));
                 push_blank(&mut out);
                 i += 1;
                 continue;
@@ -423,22 +520,12 @@ pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
 
         // setext heading
         if !is_block_start(line) {
-            if let Some(next) = lines.get(i + 1) {
-                let nt = next.trim();
-                if !nt.is_empty() && nt.chars().all(|c| c == '=') {
-                    push_blank(&mut out);
-                    out.push(heading(cfg, 1, t));
-                    push_blank(&mut out);
-                    i += 2;
-                    continue;
-                }
-                if nt.len() >= 2 && nt.chars().all(|c| c == '-') {
-                    push_blank(&mut out);
-                    out.push(heading(cfg, 2, t));
-                    push_blank(&mut out);
-                    i += 2;
-                    continue;
-                }
+            if let Some(lvl) = lines.get(i + 1).and_then(|n| setext_level(n)) {
+                push_blank(&mut out);
+                out.extend(heading(cfg, lvl, t));
+                push_blank(&mut out);
+                i += 2;
+                continue;
             }
         }
 
@@ -455,8 +542,8 @@ pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
         }
 
         // table
-        if line.contains('|') && lines.get(i + 1).map(|l| is_sep_row(l.trim())).unwrap_or(false) {
-            let (rows, next_i) = render_table(&lines, i, cfg);
+        if is_table_start(lines, i) {
+            let (rows, next_i) = render_table(lines, i, cfg);
             out.extend(rows);
             push_blank(&mut out);
             i = next_i;
@@ -466,43 +553,52 @@ pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
         // blockquote
         if t.starts_with('>') {
             let mut inner: Vec<String> = Vec::new();
-            let lazy_ok = |l: &str| {
-                !l.trim().is_empty() && !is_block_start(l) && !hr_detect(l.trim())
-            };
             while i < lines.len() {
                 let lt = lines[i].trim_start();
                 if let Some(rest) = lt.strip_prefix('>') {
                     inner.push(rest.strip_prefix(' ').unwrap_or(rest).to_string());
                     i += 1;
-                } else if lazy_ok(lines[i]) && !inner.last().map(|x| x.trim().is_empty()).unwrap_or(true) {
-                    inner.push(lines[i].to_string());
+                } else if !inner.last().map(|x| x.trim().is_empty()).unwrap_or(true)
+                    && !para_ends(lines, i)
+                {
+                    inner.push(lines[i].to_string()); // lazy continuation
                     i += 1;
                 } else {
                     break;
                 }
             }
-            let quoted = render(&inner.join("\n"), &cfg.narrow(2));
+            let inner: Vec<&str> = inner.iter().map(String::as_str).collect();
             let bar = st(cfg, "38;5;33", "┃");
+            let mut quoted = blocks(&inner, &cfg.narrow(2));
+            while quoted.last().map(|l| l.is_empty()).unwrap_or(false) {
+                quoted.pop();
+            }
             for q in quoted {
-                let joined = format!("{bar} {q}");
-                for row in wrap(&joined, cfg.width.max(3)) {
-                    out.push(row);
-                }
+                out.push(if q.is_empty() { bar.clone() } else { format!("{bar} {q}") });
             }
             continue;
         }
 
         // list item
         if let Some((indent, marker, rest)) = list_item(line) {
+            in_list = true;
             let depth = (indent / 2).min(6);
             let pad = "  ".repeat(depth);
-            let (content, task) = strip_task(&rest);
+            let mut text = rest;
+            i += 1;
+            while i < lines.len() && !para_ends(lines, i) {
+                text.push(' ');
+                text.push_str(lines[i].trim());
+                i += 1;
+            }
+            let (content, task) = strip_task(&text);
             let mut bullet = String::new();
             match marker {
                 Marker::Bullet => {
                     let sym = ["•", "◦", "▪"][depth % 3];
                     bullet.push_str(&st(cfg, "38;5;215", sym));
-                }                Marker::Ord(num) => bullet.push_str(&st(cfg, "1;38;5;215", &num)),
+                }
+                Marker::Ord(num) => bullet.push_str(&st(cfg, "1;38;5;215", &num)),
             }
             bullet.push(' ');
             match task {
@@ -510,27 +606,111 @@ pub fn render(src: &str, cfg: &Cfg) -> Vec<String> {
                 Some(false) => bullet.push_str(&st(cfg, "2", "☐ ")),
                 None => {}
             }
-            out.push(format!("{pad}{bullet}{}", inline(content, cfg)));
-            i += 1;
-            while i < lines.len() {
-                let l = lines[i];
-                if l.trim().is_empty() || list_item(l).is_some() || is_block_start(l) {
-                    break;
-                }
-                out.push(format!("{pad}  {}", inline(l.trim_start(), cfg)));
-                i += 1;
-            }
+            let hang = " ".repeat(visible_width(&pad) + visible_width(&bullet));
+            out.extend(wrap_indent(&format!("{pad}{bullet}{}", inline(content, cfg)), cfg.width, &hang));
             continue;
         }
 
-        out.push(inline(line.trim_end(), cfg));
-        i += 1;
-    }
+        let indent = line.len() - line.trim_start().len();
 
-    while out.last().map(|l| l.is_empty()).unwrap_or(false) {
-        out.pop();
+        // indented content after a list item belongs to that item
+        if in_list && indent > 0 {
+            let (rows, next) = paragraph(lines, i, cfg, &" ".repeat(indent.min(12)));
+            out.extend(rows);
+            i = next;
+            continue;
+        }
+
+        // indented code block
+        if indent >= 4 {
+            let mut block: Vec<&str> = Vec::new();
+            while i < lines.len() && (lines[i].starts_with("    ") || lines[i].trim().is_empty()) {
+                block.push(lines[i].get(4..).unwrap_or(""));
+                i += 1;
+            }
+            while block.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                block.pop();
+                i -= 1; // trailing blank lines belong to what follows
+            }
+            out.push(fence_top(cfg, ""));
+            let mut in_block = false;
+            for l in block {
+                out.extend(code_lines(cfg, l, &mut in_block));
+            }
+            out.push(fence_bottom(cfg));
+            continue;
+        }
+
+        let (rows, next) = paragraph(lines, i, cfg, "");
+        out.extend(rows);
+        i = next;
     }
     out
+}
+
+/// Collect a paragraph starting at `start`, joining soft-wrapped source lines
+/// and splitting on hard breaks (two trailing spaces or a trailing backslash).
+fn paragraph(lines: &[&str], start: usize, cfg: &Cfg, prefix: &str) -> (Vec<String>, usize) {
+    let mut segs: Vec<String> = vec![String::new()];
+    let mut j = start;
+    while j < lines.len() && (j == start || !para_ends(lines, j)) {
+        let l = lines[j];
+        let lt = l.trim();
+        let hard_bs = lt.ends_with('\\') && !lt.ends_with("\\\\");
+        let hard = l.ends_with("  ") || hard_bs;
+        let piece = if hard_bs { &lt[..lt.len() - 1] } else { lt };
+        let cur = segs.last_mut().unwrap();
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(piece);
+        if hard {
+            segs.push(String::new());
+        }
+        j += 1;
+        // the last line before a setext underline becomes that heading
+        if lines.get(j + 1).and_then(|n| setext_level(n)).is_some() && !para_ends(lines, j) {
+            break;
+        }
+    }
+    let width = cfg.width.saturating_sub(visible_width(prefix)).max(10);
+    let mut rows = Vec::new();
+    for seg in segs {
+        let text = inline(&seg, cfg);
+        if visible_width(&text) == 0 {
+            continue; // e.g. a line made only of HTML tags
+        }
+        rows.extend(wrap(&text, width).into_iter().map(|r| format!("{prefix}{r}")));
+    }
+    (rows, j)
+}
+
+/// Whether line `j` cannot continue the paragraph or list item above it.
+fn para_ends(lines: &[&str], j: usize) -> bool {
+    let l = lines[j];
+    let t = l.trim();
+    t.is_empty()
+        || is_block_start(l)
+        || hr_detect(t)
+        || t.starts_with("<!--")
+        || ref_def(l).is_some()
+        || is_table_start(lines, j)
+        || setext_level(l).is_some()
+}
+
+fn setext_level(l: &str) -> Option<usize> {
+    let t = l.trim();
+    if !t.is_empty() && t.chars().all(|c| c == '=') {
+        Some(1)
+    } else if t.len() >= 2 && t.chars().all(|c| c == '-') {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+fn is_table_start(lines: &[&str], i: usize) -> bool {
+    lines[i].contains('|') && lines.get(i + 1).map(|l| is_sep_row(l.trim())).unwrap_or(false)
 }
 
 fn is_block_start(l: &str) -> bool {
@@ -554,9 +734,10 @@ fn hr_detect(t: &str) -> bool {
     t.chars().all(|ch| ch == c || ch == ' ') && t.chars().filter(|&ch| ch == c).count() >= 3
 }
 
-fn heading(cfg: &Cfg, lvl: usize, text: &str) -> String {
+fn heading(cfg: &Cfg, lvl: usize, text: &str) -> Vec<String> {
     if !cfg.color {
-        return format!("{} {text}", "#".repeat(lvl));
+        let marks = "#".repeat(lvl);
+        return wrap_indent(&format!("{marks} {}", inline(text, cfg)), cfg.width, &" ".repeat(lvl + 1));
     }
     let code = match lvl {
         1 => "1;4;38;5;203",
@@ -566,8 +747,8 @@ fn heading(cfg: &Cfg, lvl: usize, text: &str) -> String {
         5 => "1;38;5;81",
         _ => "1;2",
     };
-    let body = inline(text, cfg);
-    format!("{} {body}{RESET}", sg(code))
+    let body = restyled(&inline(text, cfg), &sg(code));
+    wrap_indent(&format!(" {body}"), cfg.width, " ")
 }
 
 fn fence_top(cfg: &Cfg, lang: &str) -> String {
@@ -592,15 +773,19 @@ fn fence_bottom(cfg: &Cfg) -> String {
     st(cfg, "2", &format!("╰{}╯", "─".repeat(cfg.width.saturating_sub(2).max(1))))
 }
 
-fn code_line(cfg: &Cfg, s: &str, in_block: &mut bool) -> String {
+fn code_lines(cfg: &Cfg, s: &str, in_block: &mut bool) -> Vec<String> {
     if !cfg.color {
-        return s.to_string();
+        return wrap(s, cfg.width);
     }
     let base = sg("38;5;252;48;5;236");
-    let body = highlight(s, in_block);
-    let body = body.replace(RESET, &format!("{RESET}{base}"));
-    let pad = " ".repeat(cfg.width.saturating_sub(visible_width(&body)));
-    format!("{base}{body}{pad}{RESET}")
+    let body = highlight(s, in_block).replace(RESET, &format!("{RESET}{base}"));
+    wrap(&format!("{base}{body}"), cfg.width)
+        .into_iter()
+        .map(|r| {
+            let pad = " ".repeat(cfg.width.saturating_sub(visible_width(&r)));
+            format!("{r}{base}{pad}{RESET}")
+        })
+        .collect()
 }
 
 // ------------------------------------------------------ code highlighting ---
