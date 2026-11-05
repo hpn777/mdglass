@@ -27,16 +27,33 @@ install -Dm644 packaging/copyright "$ROOT/usr/share/doc/mdv/copyright"
 install -Dm644 packaging/changelog "$ROOT/usr/share/doc/mdv/changelog.Debian"
 gzip -9n "$ROOT/usr/share/doc/mdv/changelog.Debian"
 install -Dm644 README.md "$ROOT/usr/share/doc/mdv/README.md"
-# "Open With" entry for file managers; desktop-file-utils triggers refresh the cache
+install -Dm644 packaging/mdv.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/mdv.svg"
+# GNOME preview is the visible "Open With" app; the terminal pager stays as a
+# hidden alternative. desktop-file-utils triggers refresh the cache on install.
 install -Dm644 /dev/stdin "$ROOT/usr/share/applications/mdv.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=mdv
-Comment=Terminal markdown viewer
-Exec=x-terminal-emulator -e mdv %f
+GenericName=Markdown Viewer
+Comment=View Markdown documents with a native GNOME preview
+Exec=mdv --gui %f
+Icon=mdv
 Terminal=false
+Categories=Utility;TextEditor;
+Keywords=markdown;viewer;preview;
 MimeType=text/markdown;text/x-markdown;
+StartupWMClass=org.mdv.Viewer
+EOF
+install -Dm644 /dev/stdin "$ROOT/usr/share/applications/mdv-terminal.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=mdv (terminal)
+Comment=Terminal markdown viewer with pager
+Exec=x-terminal-emulator -e mdv %f
+Icon=mdv
+Terminal=false
 NoDisplay=true
+MimeType=text/markdown;text/x-markdown;
 EOF
 
 # Shared-library dependencies, computed from the binary
@@ -55,10 +72,11 @@ Installed-Size: $(du -sk --exclude=DEBIAN "$ROOT" | cut -f1)
 Depends: ${DEPENDS}
 Section: text
 Priority: optional
-Description: super fast terminal markdown viewer
+Description: super fast markdown viewer: terminal pager + GNOME preview
  mdv renders markdown in the terminal with colors, tables, syntax-highlighted
- code blocks and clickable links, and shows it in a built-in less-style pager
- with search. Piped output is plain, word-wrapped text.
+ code blocks and clickable links, shown in a built-in less-style pager with
+ search; piped output is plain, word-wrapped text. mdv --gui opens a native
+ GNOME (GTK4/libadwaita) preview window with find, zoom and live reload.
 EOF
 (cd "$ROOT" && find usr -type f -exec md5sum {} + | sort -k2) > "$ROOT/DEBIAN/md5sums"
 chmod 644 "$ROOT/DEBIAN/control" "$ROOT/DEBIAN/md5sums"

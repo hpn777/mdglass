@@ -9,6 +9,10 @@ A super fast terminal markdown viewer in Rust.
   process start included.
 - Built-in less-style pager on the alternate screen: scrolling, search with match
   highlighting, multi-file browsing, re-wraps on resize.
+- And a native GNOME preview: `mdv --gui` shows the same document in a GTK4 +
+  libadwaita window with find, zoom and live reload. The system's GNOME
+  libraries are resolved at runtime with `dlopen` — no WebKit, nothing extra
+  to install, still one small binary (~0.6 MB).
 
 ## Install (Ubuntu)
 
@@ -48,6 +52,29 @@ mdv --no-urls file.md          # hide the " (url)" after links
 | `n` `N`                      | next / previous match       |
 | `]` `[`                      | next / previous file        |
 | `q`, `Esc`                   | quit (moves on to the next file, if any) |
+
+## GNOME preview
+
+```bash
+mdv --gui README.md          # preview window; file managers get an "Open With" entry
+```
+
+`mdv --gui` shares the exact parser with the terminal back end and draws into
+native widgets (no WebKit, no terminal emulation): a header bar with document
+title, a hamburger menu, and a styled document view.
+
+| shortcut | action |
+|--------|--------|
+| `Ctrl+O` | open a file |
+| `Ctrl+F` | find bar — live highlighting, `Enter`/arrows cycle matches, `Esc` closes |
+| `Ctrl+R`, `F5` | reload; files also reload automatically when they change on disk |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` | zoom in / out / reset |
+| `Alt+←` `Alt+→` | previous / next of the files given on the command line |
+| `Ctrl+W` | close |
+
+Requires Ubuntu 22.04+ (GNOME's `libgtk-4` and `libadwaita-1`, loaded at
+runtime). Images are shown as `◈ alt` text like in the terminal, and links are
+styled but not clickable yet.
 
 ## What it renders
 

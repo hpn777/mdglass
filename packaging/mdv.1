@@ -15,6 +15,11 @@ not a terminal it prints plain text wrapped to 80 columns instead. With no
 \fIFILE\fR, or when \fIFILE\fR is \fB\-\fR, it reads standard input.
 .SH OPTIONS
 .TP
+.BR \-g ", " \-\-gui
+Open a native GNOME preview window (GTK4 + libadwaita) instead of the pager.
+Requires the system libraries Blibgtk-4\fR and Blibadwaita-1\fR, which are
+loaded at runtime; no extra packages are needed on a standard Ubuntu desktop.
+.TP
 .BR \-n ", " \-\-no\-pager
 Print the rendered output to standard output instead of opening the pager.
 .TP
@@ -32,7 +37,7 @@ Print help and exit.
 .TP
 .BR \-V ", " \-\-version
 Print the version and exit.
-.SH KEYS
+.SH KEYS (PAGER)
 .TP
 .BR j " " k ", " Down " " Up ", " Enter
 Scroll one line down / up.
@@ -57,6 +62,22 @@ Show the next / previous file.
 .TP
 .BR q ", " Esc
 Quit, or move on to the next file when several were given.
+.SH GUI ACTIONS
+.BR Ctrl+O
+Open a file (also BAlt+Left/RightR for previous/next of the files given).
+.TP
+.BR Ctrl+F
+Find bar with live match highlighting; Enter and the arrow buttons cycle
+matches, Esc closes.
+.TP
+.BR Ctrl+R " or " F5
+Reload the current file. Files are also reloaded automatically when changed.
+.TP
+.BR Ctrl++ "/" \- "/ " Ctrl+0
+Zoom in, out, reset.
+.TP
+.BR Ctrl+W
+Close the window.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
@@ -65,11 +86,13 @@ When set, colors are disabled unless \fB\-\-color\fR is given.
 .B TERM
 When \fBdumb\fR, colors are disabled unless \fB\-\-color\fR is given.
 .SH EXIT STATUS
-0 on success, 1 if a file could not be read, 2 on usage errors.
+0 on success, 1 if a file could not be read or the GUI could not start,
+2 on usage errors.
 .SH EXAMPLES
 .nf
 mdv README.md
 mdv a.md b.md
 curl \-s https://example.com/notes.md | mdv
 mdv notes.md | grep TODO
+mdv --gui README.md          # native GNOME preview window
 .fi

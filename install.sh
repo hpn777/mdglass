@@ -2,7 +2,8 @@
 # mdv installer for Ubuntu. Run as your normal user; sudo is used only for
 # the copy steps that need it.
 #   ./install.sh                 build + install mdv to /usr/local/bin
-#   ./install.sh --with-desktop  also add mdv to the file manager's "Open With"
+#   ./install.sh --with-desktop  also add the GNOME viewer + terminal entries
+#                                to the file manager's "Open With" menus
 #   ./install.sh --uninstall     remove the binary and desktop entry
 #   PREFIX=~/.local/bin ./install.sh   install without sudo
 set -euo pipefail
@@ -48,9 +49,13 @@ case "$PREFIX" in
 esac
 DESKTOP_FILE="$APPS_DIR/mdv.desktop"
 
+ICON_DIR="$(dirname "$APPS_DIR")/icons/hicolor"
+ICON_FILE="$ICON_DIR/scalable/apps/mdv.svg"
+
 if [ "$ACTION" = uninstall ]; then
     $(sudo_for "$PREFIX") rm -f "$PREFIX/$BIN_NAME"
-    [ -e "$DESKTOP_FILE" ] && $(sudo_for "$APPS_DIR") rm -f "$DESKTOP_FILE"
+    $(sudo_for "$APPS_DIR") rm -f "$DESKTOP_FILE" "${APPS_DIR}/mdv-terminal.desktop"
+    [ -e "$ICON_FILE" ] && $(sudo_for "$ICON_DIR") rm -f "$ICON_FILE"
     echo ">> mdv uninstalled."
     exit 0
 fi
@@ -88,19 +93,37 @@ case ":$PATH:" in
     *) echo ">> Note: $PREFIX is not on your PATH" ;;
 esac
 
-# 4. Optional "Open With" entry: launches mdv in the default terminal
+# 4. Optional "Open With" entries + icon. The GUI viewer is the visible app;
+#    the terminal pager is a hidden alternative (x-terminal-emulator -e works
+#    with gnome-terminal, konsole, xterm; Ptyxis needs "ptyxis -- CMD").
 if [ "$DESKTOP" = 1 ]; then
-    entry="[Desktop Entry]
+    gui="[Desktop Entry]
 Type=Application
 Name=mdv
-Comment=Terminal markdown viewer
-Exec=x-terminal-emulator -e $PREFIX/$BIN_NAME %f
+GenericName=Markdown Viewer
+Comment=View Markdown documents with a native GNOME preview
+Exec=$PREFIX/$BIN_NAME --gui %f
+Icon=mdv
 Terminal=false
+Categories=Utility;TextEditor;
+Keywords=markdown;viewer;preview;
 MimeType=text/markdown;text/x-markdown;
-NoDisplay=true"
-    printf '%s\n' "$entry" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "$DESKTOP_FILE"
+StartupWMClass=org.mdv.Viewer"
+    term="[Desktop Entry]
+Type=Application
+Name=mdv (terminal)
+Comment=Terminal markdown viewer with pager
+Exec=x-terminal-emulator -e $PREFIX/$BIN_NAME %f
+Icon=mdv
+Terminal=false
+NoDisplay=true
+MimeType=text/markdown;text/x-markdown;"
+    printf '%s\n' "$gui" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "$DESKTOP_FILE"
+    printf '%s\n' "$term" | $(sudo_for "$APPS_DIR") install -Dm644 /dev/stdin "${APPS_DIR}/mdv-terminal.desktop"
+    $(sudo_for "$ICON_DIR") install -Dm644 packaging/mdv.svg "$ICON_FILE"
     command -v update-desktop-database >/dev/null 2>&1 && $(sudo_for "$APPS_DIR") update-desktop-database "$APPS_DIR" >/dev/null 2>&1 || true
-    echo ">> Added desktop entry $DESKTOP_FILE"
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && $(sudo_for "$ICON_DIR") gtk-update-icon-cache -qf "$ICON_DIR" >/dev/null 2>&1 || true
+    echo ">> Added desktop entries and icon ($APPS_DIR)"
 fi
 
 echo ">> Done. Try: mdv README.md"

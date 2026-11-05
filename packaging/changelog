@@ -1,3 +1,11 @@
+mdv (0.1.0-2) unstable; urgency=medium
+
+  * mdv --gui: native GNOME preview (GTK4 + libadwaita, loaded at runtime).
+  * Desktop entry and icon for the preview; the terminal pager remains as a
+    hidden "Open With" alternative.
+
+ -- hypnos <hypnos@localhost>  Thu, 05 Nov 2026 18:00:00 +0000
+
 mdv (0.1.0-1) unstable; urgency=medium
 
   * Initial release.
