@@ -93,7 +93,7 @@ Not supported: footnotes, definition lists, math, and HTML rendering.
 
 ```bash
 cargo test     # renderer, ANSI wrapping and pager key handling
-make check     # the above plus end-to-end pty tests of the release binary
+make check     # + pty tests, GUI binding ABI audit, scripted GUI session (Broadway)
 ```
 
 ## License

@@ -15,9 +15,12 @@ release:
 test:
 	cargo test
 
-# unit tests plus end-to-end checks of the release binary in a real pty
+# unit tests, end-to-end pty checks of the release binary, the GUI's C ABI
+# audit, and a scripted GUI session on a headless Broadway display
 check: test release
 	python3 tests/pty_smoke.py $(TARGET_DIR)/release/$(BIN)
+	python3 tests/gui_abi_audit.py src/gui.rs
+	python3 tests/gui_smoke.py $(TARGET_DIR)/release/$(BIN)
 
 # Ubuntu/Debian package in dist/
 deb:

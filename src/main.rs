@@ -72,6 +72,14 @@ fn main() {
     let color = forced_color.unwrap_or_else(|| {
         stdout_tty && std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb")
     });
+    if paths.is_empty() && gui && !stdin_piped {
+        // launched from the app grid or with no argument: empty window with Open…
+        if let Err(e) = gui::run(Vec::new(), None) {
+            eprintln!("mdv: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if paths.is_empty() {
         if stdin_piped {
             paths.push("-".into());
@@ -104,7 +112,11 @@ fn main() {
     }
 
     if gui {
-        let stdin_content = files.iter().find(|(n, _)| n == "-").map(|(_, c)| c.clone());
+        // empty stdin (e.g. /dev/null when started from the app grid) is no document
+        let stdin_content = files
+            .iter()
+            .find(|(n, c)| n == "-" && !c.is_empty())
+            .map(|(_, c)| c.clone());
         let paths: Vec<String> =
             files.iter().filter(|(n, _)| n != "-").map(|(n, _)| n.clone()).collect();
         if let Err(e) = gui::run(paths, stdin_content) {

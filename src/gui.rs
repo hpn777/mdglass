@@ -6,7 +6,7 @@
 // find, zoom, next/prev file, and live reload when the file changes.
 
 use std::sync::OnceLock;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
 use std::path::Path;
 use std::time::SystemTime;
@@ -47,7 +47,8 @@ const STYLE_ITALIC: c_int = 2;
 const UNDERLINE_SINGLE: c_int = 1;
 const SEARCH_FLAGS: c_uint = 1 | 2; // TEXT_ONLY | CASE_INSENSITIVE
 const KEY_ESCAPE: c_uint = 0xff1b;
-const COL_PX: c_int = 8; // approx width of one terminal column, for indents
+const BASE_FONT_PX: f64 = 15.0;
+const MONO_ADVANCE: f64 = 0.6; // monospace glyph width in em, for indents
 
 fn expect(handle: Ptr, what: &str) -> Result<Ptr, String> {
     if handle.is_null() {
@@ -70,14 +71,14 @@ unsafe fn tf<T>(handle: Ptr, name: &str) -> Result<T, String> {
 /// All C entry points we use. `g_signal_connect_data` takes plain handlers,
 /// which are then called as `handler(instance, signal-params..., user_data)`.
 struct Lib {
-    gtk_init_check: unsafe extern "C" fn(Ptr, *mut c_int, *mut *mut Ptr) -> c_int,
+    gtk_init_check: unsafe extern "C" fn() -> c_int,
     gtk_window_set_title: unsafe extern "C" fn(Ptr, *const c_char),
     gtk_window_set_default_size: unsafe extern "C" fn(Ptr, c_int, c_int),
     gtk_window_close: unsafe extern "C" fn(Ptr),
-    gtk_window_set_child: unsafe extern "C" fn(Ptr, Ptr),
+    adw_application_window_set_content: unsafe extern "C" fn(Ptr, Ptr),
     gtk_window_present: unsafe extern "C" fn(Ptr),
-    gtk_header_bar_set_title_widget: unsafe extern "C" fn(Ptr, Ptr),
-    gtk_header_bar_pack_end: unsafe extern "C" fn(Ptr, Ptr),
+    adw_header_bar_set_title_widget: unsafe extern "C" fn(Ptr, Ptr),
+    adw_header_bar_pack_end: unsafe extern "C" fn(Ptr, Ptr),
     gtk_scrolled_window_new: unsafe extern "C" fn() -> Ptr,
     gtk_scrolled_window_set_child: unsafe extern "C" fn(Ptr, Ptr),
     gtk_scrolled_window_set_policy: unsafe extern "C" fn(Ptr, c_int, c_int),
@@ -107,7 +108,7 @@ struct Lib {
         unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, *const TextIter),
     gtk_text_buffer_get_bounds: unsafe extern "C" fn(Ptr, *mut TextIter, *mut TextIter),
     gtk_text_iter_forward_search:
-        unsafe extern "C" fn(*const TextIter, *const c_char, c_uint, *mut TextIter, *mut TextIter) -> c_int,
+        unsafe extern "C" fn(*const TextIter, *const c_char, c_uint, *mut TextIter, *mut TextIter, *const TextIter) -> c_int,
     gtk_text_iter_compare: unsafe extern "C" fn(*const TextIter, *const TextIter) -> c_int,
     gtk_box_new: unsafe extern "C" fn(c_int, c_int) -> Ptr,
     gtk_box_append: unsafe extern "C" fn(Ptr, Ptr),
@@ -116,6 +117,7 @@ struct Lib {
     gtk_menu_button_new: unsafe extern "C" fn() -> Ptr,
     gtk_label_new: unsafe extern "C" fn(*const c_char) -> Ptr,
     gtk_label_set_text: unsafe extern "C" fn(Ptr, *const c_char),
+    gtk_label_get_text: unsafe extern "C" fn(Ptr) -> *const c_char,
     gtk_widget_add_css_class: unsafe extern "C" fn(Ptr, *const c_char),
     gtk_widget_set_visible: unsafe extern "C" fn(Ptr, c_int),
     gtk_widget_set_size_request: unsafe extern "C" fn(Ptr, c_int, c_int),
@@ -154,9 +156,22 @@ struct Lib {
     adw_status_page_set_child: unsafe extern "C" fn(Ptr, Ptr),
     g_object_set: unsafe extern "C" fn(Ptr, *const c_char, ...),
     g_object_unref: unsafe extern "C" fn(Ptr),
+    g_object_ref_sink: unsafe extern "C" fn(Ptr) -> Ptr,
+    gtk_widget_paintable_new: unsafe extern "C" fn(Ptr) -> Ptr,
+    gtk_snapshot_new: unsafe extern "C" fn() -> Ptr,
+    gdk_paintable_snapshot: unsafe extern "C" fn(Ptr, Ptr, f64, f64),
+    gtk_snapshot_free_to_node: unsafe extern "C" fn(Ptr) -> Ptr,
+    gtk_native_get_renderer: unsafe extern "C" fn(Ptr) -> Ptr,
+    gsk_renderer_render_texture: unsafe extern "C" fn(Ptr, Ptr, Ptr) -> Ptr,
+    gdk_texture_save_to_png: unsafe extern "C" fn(Ptr, *const c_char) -> c_int,
+    gtk_widget_get_width: unsafe extern "C" fn(Ptr) -> c_int,
+    gtk_widget_get_height: unsafe extern "C" fn(Ptr) -> c_int,
+    gtk_editable_set_text: unsafe extern "C" fn(Ptr, *const c_char),
+    g_action_group_activate_action: unsafe extern "C" fn(Ptr, *const c_char, Ptr),
+    g_timeout_add: unsafe extern "C" fn(c_uint, Option<unsafe extern "C" fn(Ptr) -> c_int>, Ptr) -> c_uint,
     g_signal_connect_data: unsafe extern "C" fn(Ptr, *const c_char, Ptr, Ptr, Ptr, c_ulong) -> c_ulong,
     g_menu_new: unsafe extern "C" fn() -> Ptr,
-    g_menu_append: unsafe extern "C" fn(Ptr, *const c_char, *const c_char, ...) -> c_uint,
+    g_menu_append: unsafe extern "C" fn(Ptr, *const c_char, *const c_char),
     g_menu_append_submenu: unsafe extern "C" fn(Ptr, *const c_char, Ptr) -> c_uint,
     g_simple_action_new: unsafe extern "C" fn(*const c_char, Ptr) -> Ptr,
     g_action_map_add_action: unsafe extern "C" fn(Ptr, Ptr),
@@ -191,14 +206,14 @@ fn load_lib() -> Result<Lib, String> {
             (glib $n:literal, $t:ty) => { g!(glib, $n, $t) };
         }
         let lib = Lib {
-            gtk_init_check: gs!("gtk_init_check", unsafe extern "C" fn(Ptr, *mut c_int, *mut *mut Ptr) -> c_int),
+            gtk_init_check: gs!("gtk_init_check", unsafe extern "C" fn() -> c_int),
             gtk_window_set_title: gs!("gtk_window_set_title", unsafe extern "C" fn(Ptr, *const c_char)),
             gtk_window_set_default_size: gs!("gtk_window_set_default_size", unsafe extern "C" fn(Ptr, c_int, c_int)),
             gtk_window_close: gs!("gtk_window_close", unsafe extern "C" fn(Ptr)),
-            gtk_window_set_child: gs!("gtk_window_set_child", unsafe extern "C" fn(Ptr, Ptr)),
+            adw_application_window_set_content: gs!(adw "adw_application_window_set_content", unsafe extern "C" fn(Ptr, Ptr)),
             gtk_window_present: gs!("gtk_window_present", unsafe extern "C" fn(Ptr)),
-            gtk_header_bar_set_title_widget: gs!("gtk_header_bar_set_title_widget", unsafe extern "C" fn(Ptr, Ptr)),
-            gtk_header_bar_pack_end: gs!("gtk_header_bar_pack_end", unsafe extern "C" fn(Ptr, Ptr)),
+            adw_header_bar_set_title_widget: gs!(adw "adw_header_bar_set_title_widget", unsafe extern "C" fn(Ptr, Ptr)),
+            adw_header_bar_pack_end: gs!(adw "adw_header_bar_pack_end", unsafe extern "C" fn(Ptr, Ptr)),
             gtk_scrolled_window_new: gs!("gtk_scrolled_window_new", unsafe extern "C" fn() -> Ptr),
             gtk_scrolled_window_set_child: gs!("gtk_scrolled_window_set_child", unsafe extern "C" fn(Ptr, Ptr)),
             gtk_scrolled_window_set_policy: gs!("gtk_scrolled_window_set_policy", unsafe extern "C" fn(Ptr, c_int, c_int)),
@@ -224,7 +239,7 @@ fn load_lib() -> Result<Lib, String> {
             gtk_text_buffer_apply_tag_by_name: gs!("gtk_text_buffer_apply_tag_by_name", unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, *const TextIter)),
             gtk_text_buffer_remove_tag_by_name: gs!("gtk_text_buffer_remove_tag_by_name", unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, *const TextIter)),
             gtk_text_buffer_get_bounds: gs!("gtk_text_buffer_get_bounds", unsafe extern "C" fn(Ptr, *mut TextIter, *mut TextIter)),
-            gtk_text_iter_forward_search: gs!("gtk_text_iter_forward_search", unsafe extern "C" fn(*const TextIter, *const c_char, c_uint, *mut TextIter, *mut TextIter) -> c_int),
+            gtk_text_iter_forward_search: gs!("gtk_text_iter_forward_search", unsafe extern "C" fn(*const TextIter, *const c_char, c_uint, *mut TextIter, *mut TextIter, *const TextIter) -> c_int),
             gtk_text_iter_compare: gs!("gtk_text_iter_compare", unsafe extern "C" fn(*const TextIter, *const TextIter) -> c_int),
             gtk_box_new: gs!("gtk_box_new", unsafe extern "C" fn(c_int, c_int) -> Ptr),
             gtk_box_append: gs!("gtk_box_append", unsafe extern "C" fn(Ptr, Ptr)),
@@ -233,6 +248,7 @@ fn load_lib() -> Result<Lib, String> {
             gtk_menu_button_new: gs!("gtk_menu_button_new", unsafe extern "C" fn() -> Ptr),
             gtk_label_new: gs!("gtk_label_new", unsafe extern "C" fn(*const c_char) -> Ptr),
             gtk_label_set_text: gs!("gtk_label_set_text", unsafe extern "C" fn(Ptr, *const c_char)),
+            gtk_label_get_text: gs!("gtk_label_get_text", unsafe extern "C" fn(Ptr) -> *const c_char),
             gtk_widget_add_css_class: gs!("gtk_widget_add_css_class", unsafe extern "C" fn(Ptr, *const c_char)),
             gtk_widget_set_visible: gs!("gtk_widget_set_visible", unsafe extern "C" fn(Ptr, c_int)),
             gtk_widget_set_size_request: gs!("gtk_widget_set_size_request", unsafe extern "C" fn(Ptr, c_int, c_int)),
@@ -270,9 +286,22 @@ fn load_lib() -> Result<Lib, String> {
             adw_status_page_set_child: gs!(adw "adw_status_page_set_child", unsafe extern "C" fn(Ptr, Ptr)),
             g_object_set: gs!(go "g_object_set", unsafe extern "C" fn(Ptr, *const c_char, ...)),
             g_object_unref: gs!(go "g_object_unref", unsafe extern "C" fn(Ptr)),
+            g_object_ref_sink: gs!(go "g_object_ref_sink", unsafe extern "C" fn(Ptr) -> Ptr),
+            gtk_widget_paintable_new: gs!("gtk_widget_paintable_new", unsafe extern "C" fn(Ptr) -> Ptr),
+            gtk_snapshot_new: gs!("gtk_snapshot_new", unsafe extern "C" fn() -> Ptr),
+            gdk_paintable_snapshot: gs!("gdk_paintable_snapshot", unsafe extern "C" fn(Ptr, Ptr, f64, f64)),
+            gtk_snapshot_free_to_node: gs!("gtk_snapshot_free_to_node", unsafe extern "C" fn(Ptr) -> Ptr),
+            gtk_native_get_renderer: gs!("gtk_native_get_renderer", unsafe extern "C" fn(Ptr) -> Ptr),
+            gsk_renderer_render_texture: gs!("gsk_renderer_render_texture", unsafe extern "C" fn(Ptr, Ptr, Ptr) -> Ptr),
+            gdk_texture_save_to_png: gs!("gdk_texture_save_to_png", unsafe extern "C" fn(Ptr, *const c_char) -> c_int),
+            gtk_widget_get_width: gs!("gtk_widget_get_width", unsafe extern "C" fn(Ptr) -> c_int),
+            gtk_widget_get_height: gs!("gtk_widget_get_height", unsafe extern "C" fn(Ptr) -> c_int),
+            gtk_editable_set_text: gs!("gtk_editable_set_text", unsafe extern "C" fn(Ptr, *const c_char)),
+            g_action_group_activate_action: gs!(gio "g_action_group_activate_action", unsafe extern "C" fn(Ptr, *const c_char, Ptr)),
+            g_timeout_add: gs!(glib "g_timeout_add", unsafe extern "C" fn(c_uint, Option<unsafe extern "C" fn(Ptr) -> c_int>, Ptr) -> c_uint),
             g_signal_connect_data: gs!(go "g_signal_connect_data", unsafe extern "C" fn(Ptr, *const c_char, Ptr, Ptr, Ptr, c_ulong) -> c_ulong),
             g_menu_new: gs!(gio "g_menu_new", unsafe extern "C" fn() -> Ptr),
-            g_menu_append: gs!(gio "g_menu_append", unsafe extern "C" fn(Ptr, *const c_char, *const c_char, ...) -> c_uint),
+            g_menu_append: gs!(gio "g_menu_append", unsafe extern "C" fn(Ptr, *const c_char, *const c_char)),
             g_menu_append_submenu: gs!(gio "g_menu_append_submenu", unsafe extern "C" fn(Ptr, *const c_char, Ptr) -> c_uint),
             g_simple_action_new: gs!(gio "g_simple_action_new", unsafe extern "C" fn(*const c_char, Ptr) -> Ptr),
             g_action_map_add_action: gs!(gio "g_action_map_add_action", unsafe extern "C" fn(Ptr, Ptr)),
@@ -314,7 +343,8 @@ struct App {
     idx: usize,
     content: Option<String>, // set when the document came from stdin
     mtime: Option<SystemTime>,
-    ptags: HashSet<String>,
+    /// margin tags by name: (tag, quote depth, indent cols, hanging cols, is code block)
+    ptags: HashMap<String, (Ptr, usize, usize, usize, bool)>,
     status_shown: bool,
     find_shown: bool,
 }
@@ -417,6 +447,9 @@ unsafe fn make_tags() {
         set_i(t, "foreground-set", 1);
     }
 
+    // DejaVu (always on Ubuntu) has the 0.6 em advance MONO_ADVANCE assumes
+    set_s(tag("lead"), "family", "DejaVu Sans Mono, Monospace");
+
     let t = tag("mono");
     set_s(t, "family", "Monospace");
     set_f(t, "scale", 0.92);
@@ -432,20 +465,49 @@ unsafe fn make_tags() {
     set_i(t, "background-set", 1);
 }
 
-/// Code-block tags per blockquote depth (margins include the quote bars).
-unsafe fn ensure_cb(depth: usize) -> String {
-    let name = format!("cb{depth}");
-    let fresh = unsafe { (*app()).ptags.insert(name.clone()) };
-    if fresh {
+/// Width of one monospace column at the current zoom, in pixels.
+unsafe fn col_px() -> f64 {
+    BASE_FONT_PX * (*app()).zoom * MONO_ADVANCE
+}
+
+/// (Re)compute the pixel margins of one margin tag. Margins accumulate onto
+/// the view's own margin; bullets and quote bars are monospace, so column
+/// counts convert to pixels exactly. A negative Pango indent keeps the first
+/// line at the margin and indents the wrapped lines, so quote bars and
+/// bullets hang to the left of the text they introduce.
+unsafe fn set_margins(t: Ptr, depth: usize, indent: usize, hanging: usize, code: bool) {
+    let px = col_px();
+    let cols = |n: usize| (n as f64 * px).round() as c_int;
+    set_i(t, "accumulative-margin", 1);
+    if code {
+        set_i(t, "left-margin", cols(depth * 2)); // block content clears the bars
+    } else {
+        // top-level list markers sit in a fixed two-column gutter
+        let gutter = if depth == 0 && hanging > 0 { 2 } else { 0 };
+        set_i(t, "left-margin", cols(indent + gutter));
+        set_i(t, "indent", -cols(depth * 2 + hanging));
+    }
+}
+
+unsafe fn ensure_margin(name: String, depth: usize, indent: usize, hanging: usize, code: bool) -> String {
+    let a = &mut *app();
+    if !a.ptags.contains_key(&name) {
         let t = tag(&name);
-        set_s(t, "family", "Monospace");
-        set_s(t, "background", "rgba(127,127,127,0.11)");
-        set_i(t, "background-set", 1);
-        set_i(t, "left-margin", 18 + depth as c_int * 2 * COL_PX);
-        set_i(t, "right-margin", 18);
-        set_f(t, "scale", 0.92);
+        if code {
+            set_s(t, "family", "Monospace");
+            set_s(t, "paragraph-background", "rgba(127,127,127,0.11)");
+            set_i(t, "paragraph-background-set", 1);
+            set_f(t, "scale", 0.92);
+        }
+        set_margins(t, depth, indent, hanging, code);
+        a.ptags.insert(name.clone(), (t, depth, indent, hanging, code));
     }
     name
+}
+
+/// Code-block tag per blockquote depth (one shaded block, margins clear the bars).
+unsafe fn ensure_cb(depth: usize) -> String {
+    ensure_margin(format!("cb{depth}"), depth, 0, 0, true)
 }
 
 /// Paragraph margins per (quote depth, indent, hanging).
@@ -453,24 +515,22 @@ unsafe fn ensure_para_tag(depth: usize, indent: usize, hanging: usize) -> Option
     if depth == 0 && indent == 0 && hanging == 0 {
         return None;
     }
-    let name = format!("p{depth}-{indent}-{hanging}");
-    let fresh = unsafe { (*app()).ptags.insert(name.clone()) };
-    if fresh {
-        let t = tag(&name);
-        set_i(t, "left-margin", (depth as c_int * 2 + indent as c_int + hanging as c_int) * COL_PX);
-        if hanging > 0 {
-            set_i(t, "indent", -(hanging as c_int * COL_PX)); // first line hangs back
-        }
-    }
-    Some(name)
+    Some(ensure_margin(format!("p{depth}-{indent}-{hanging}"), depth, indent, hanging, false))
 }
 
-/// Paragraph margin (no hanging) for tables and rules inside quotes.
+/// Plain left margin for tables and rules inside quotes (they never wrap).
 unsafe fn ensure_margin_tag(depth: usize) -> Option<String> {
     if depth == 0 {
         return None;
     }
-    Some(unsafe { ensure_para_tag(depth, 0, 0) }.unwrap())
+    let name = format!("m{depth}");
+    let a = &mut *app();
+    if !a.ptags.contains_key(&name) {
+        let t = tag(&name);
+        set_margins(t, depth, 0, 0, true);
+        a.ptags.insert(name.clone(), (t, depth, 0, 0, true));
+    }
+    Some(name)
 }
 
 // ------------------------------------------------------------- rendering ---
@@ -536,16 +596,23 @@ fn style_tag_names(s: &Span) -> Vec<String> {
     t
 }
 
-unsafe fn emit_spans(spans: &[Span], base: &[String], depth: usize) {
+/// Insert spans; the first `lead` columns (list bullet, task box) and the
+/// quote bars are set in monospace so the hanging indent lines up exactly.
+unsafe fn emit_spans(spans: &[Span], base: &[String], depth: usize, lead: usize) {
     if depth > 0 {
-        let bar = format!("{} ", "┃".repeat(depth));
         let mut bt = base.to_vec();
         bt.push("role-bar".into());
-        insert_text(&bar, &bt);
+        bt.push("lead".into());
+        insert_text(&"┃ ".repeat(depth), &bt);
     }
+    let mut col = 0usize;
     for s in spans {
         let mut t = base.to_vec();
         t.extend(style_tag_names(s));
+        if col < lead {
+            t.push("lead".into());
+        }
+        col += s.text.chars().count();
         insert_text(&s.text, &t);
     }
 }
@@ -566,7 +633,7 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                 if let Some(p) = ensure_para_tag(depth, 0, 0) {
                     t.push(p);
                 }
-                emit_spans(spans, &t, depth);
+                emit_spans(spans, &t, depth, 0);
                 insert_text("\n", &t);
             }
             Line::Para { spans, indent, hanging } => {
@@ -574,7 +641,7 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                 if let Some(p) = ensure_para_tag(depth, *indent, *hanging) {
                     t.push(p);
                 }
-                emit_spans(spans, &t, depth);
+                emit_spans(spans, &t, depth, *hanging);
                 insert_text("\n", &t);
             }
             Line::Code { lines, .. } => {
@@ -674,7 +741,7 @@ unsafe fn do_search(from_top: bool, backward: bool) {
     loop {
         let (mut s, mut e) = (TextIter::default(), TextIter::default());
         let found =
-            (l().gtk_text_iter_forward_search)(&it, needle_c.as_ptr(), SEARCH_FLAGS, &mut s, &mut e);
+            (l().gtk_text_iter_forward_search)(&it, needle_c.as_ptr(), SEARCH_FLAGS, &mut s, &mut e, std::ptr::null()); // no limit
         if found == 0 {
             break;
         }
@@ -735,10 +802,14 @@ unsafe fn apply_css() {
     let zoom = (*app()).zoom;
     let css = format!(
         ".mdvview {{ font-size: {:.1}px; }}\n.mdvfind {{ border-top: 1px solid alpha(currentColor, 0.12); }}\n",
-        15.0 * zoom
+        BASE_FONT_PX * zoom
     );
     let c = cstr(&css);
     (l().gtk_css_provider_load_from_string)((*app()).css, c.as_ptr());
+    let tags: Vec<_> = (*app()).ptags.values().copied().collect();
+    for (t, depth, indent, hanging, code) in tags {
+        set_margins(t, depth, indent, hanging, code);
+    }
 }
 
 // --------------------------------------------------------------- actions ---
@@ -848,9 +919,8 @@ unsafe extern "C" fn entry_activate(_: Ptr, _: Ptr) {
     unsafe { do_search(false, false) }
 }
 
-// key handler: (controller, keyval, keycode, state, user_data); the gboolean
-// return of this signal is ignored (the closure has no return type), so the
-// event also does its default — which for Escape is harmless.
+// key-pressed handler: (controller, keyval, keycode, state, user_data).
+// Returning FALSE lets the event continue to the entry's own handling.
 unsafe extern "C" fn key_press(_ctrl: Ptr, keyval: c_uint, _code: c_uint, _state: c_uint, _data: Ptr) -> c_int {
     if keyval == KEY_ESCAPE {
         unsafe {
@@ -890,13 +960,13 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
 
     let toolbar = (l().adw_toolbar_view_new)();
     let header = (l().adw_header_bar_new)();
-    a.wtitle = (l().adw_window_title_new)(std::ptr::null(), c"mdv".as_ptr());
-    (l().gtk_header_bar_set_title_widget)(header, a.wtitle);
+    a.wtitle = (l().adw_window_title_new)(c"mdv".as_ptr(), c"".as_ptr());
+    (l().adw_header_bar_set_title_widget)(header, a.wtitle);
     let menu_btn = (l().gtk_menu_button_new)();
     set_s(menu_btn, "icon-name", "open-menu-symbolic");
     set_b(menu_btn, "primary", true);
     build_menu(menu_btn);
-    (l().gtk_header_bar_pack_end)(header, menu_btn);
+    (l().adw_header_bar_pack_end)(header, menu_btn);
     (l().adw_toolbar_view_add_top_bar)(toolbar, header);
 
     let vbox = (l().gtk_box_new)(ORIENT_VERTICAL, 0);
@@ -905,6 +975,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     (l().gtk_widget_set_vexpand)(a.scrolled, 1);
     (l().gtk_scrolled_window_set_policy)(a.scrolled, POLICY_NEVER, POLICY_AUTOMATIC);
     a.view = (l().gtk_text_view_new)();
+    (l().g_object_ref_sink)(a.view); // survives being swapped out for the status page
     (l().gtk_text_view_set_wrap_mode)(a.view, WRAP_WORD_CHAR);
     (l().gtk_text_view_set_editable)(a.view, 0);
     (l().gtk_text_view_set_cursor_visible)(a.view, 1);
@@ -918,13 +989,14 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     (l().gtk_scrolled_window_set_child)(a.scrolled, a.view);
 
     a.status = build_status_page();
+    (l().g_object_ref_sink)(a.status);
     a.status_shown = true;
 
     a.findbar = build_findbar();
     (l().gtk_box_append)(vbox, a.scrolled);
     (l().gtk_box_append)(vbox, a.findbar);
     (l().adw_toolbar_view_set_content)(toolbar, vbox);
-    (l().gtk_window_set_child)(a.win, toolbar);
+    (l().adw_application_window_set_content)(a.win, toolbar);
 
     a.css = (l().gtk_css_provider_new)();
     let display = (l().gtk_widget_get_display)(a.view);
@@ -943,6 +1015,9 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     }
     (l().gtk_window_present)(a.win);
     (l().g_timeout_add_seconds)(2, Some(on_tick), std::ptr::null_mut());
+    if std::env::var_os("MDV_GUI_SCRIPT").is_some() {
+        (l().g_timeout_add)(700, Some(on_script_step), std::ptr::null_mut());
+    }
 }
 
 // ------------------------------------------------------------- widgets ---
@@ -955,6 +1030,9 @@ unsafe fn build_status_page() -> Ptr {
     (l().gtk_widget_set_vexpand)(page, 1);
     let btn = (l().gtk_button_new_with_label)(c"Open…".as_ptr());
     set_s(btn, "action-name", "win.open");
+    set_i(btn, "halign", 3); // GTK_ALIGN_CENTER
+    (l().gtk_widget_add_css_class)(btn, c"pill".as_ptr());
+    (l().gtk_widget_add_css_class)(btn, c"suggested-action".as_ptr());
     (l().adw_status_page_set_child)(page, btn);
     page
 }
@@ -973,6 +1051,7 @@ unsafe fn build_findbar() -> Ptr {
     let label = (l().gtk_label_new)(c" ".as_ptr());
     (l().gtk_widget_set_margin_end)(label, 8);
     set_hits_label(label);
+    (l().gtk_box_append)(bar, label);
     build_findbar_close(&bar);
     bar
 }
@@ -987,7 +1066,7 @@ unsafe fn build_findbar_entry(bar: &Ptr) {
     let ctrl = (l().gtk_event_controller_key_new)();
     (l().gtk_event_controller_set_propagation_phase)(ctrl, PHASE_CAPTURED);
     (l().gtk_widget_add_controller)(entry, ctrl);
-    connect(ctrl, "key-press", cbptr::<unsafe extern "C" fn(Ptr, c_uint, c_uint, c_uint, Ptr) -> c_int>(key_press));
+    connect(ctrl, "key-pressed", cbptr::<unsafe extern "C" fn(Ptr, c_uint, c_uint, c_uint, Ptr) -> c_int>(key_press));
     (*app()).entry = entry;
     (*app()).findbar = *bar;
     (l().gtk_box_append)(*bar, entry);
@@ -1016,7 +1095,7 @@ unsafe fn build_menu(btn: Ptr) {
     let menu = (l().g_menu_new)();
     let add = | action: &str, label: &str | {
         let (a, lb) = (cstr(action), cstr(label));
-        (l().g_menu_append)(menu, a.as_ptr(), lb.as_ptr());
+        (l().g_menu_append)(menu, lb.as_ptr(), a.as_ptr());
     };
     add("win.open", "_Open…");
     add("win.find", "_Find…");
@@ -1024,7 +1103,7 @@ unsafe fn build_menu(btn: Ptr) {
     let section = (l().g_menu_new)();
     let sec_add = | menu: Ptr, action: &str, label: &str | {
         let (a, lb) = (cstr(action), cstr(label));
-        (l().g_menu_append)(menu, a.as_ptr(), lb.as_ptr());
+        (l().g_menu_append)(menu, lb.as_ptr(), a.as_ptr());
     };
     sec_add(section, "win.zoom-in", "Zoom _In");
     sec_add(section, "win.zoom-out", "Zoom _Out");
@@ -1085,6 +1164,79 @@ unsafe fn add_accels() {
     accel("win.quit", &["<Control>w"]);
 }
 
+
+// ----------------------------------------------------------- test hook ---
+// MDV_GUI_SCRIPT="action:find;find:text;esc;shot:/tmp/a.png;quit" drives the
+// real window for end-to-end tests (e.g. under GDK_BACKEND=broadway), one
+// step every 700 ms. Not part of the user interface.
+
+static mut SCRIPT_POS: usize = 0;
+static mut SHOT_RETRIES: u32 = 0;
+
+unsafe fn snapshot_png(path: &str) -> bool {
+    let a = &*app();
+    let (w, h) = ((l().gtk_widget_get_width)(a.win), (l().gtk_widget_get_height)(a.win));
+    let paintable = (l().gtk_widget_paintable_new)(a.win);
+    let snap = (l().gtk_snapshot_new)();
+    (l().gdk_paintable_snapshot)(paintable, snap, w as f64, h as f64);
+    let node = (l().gtk_snapshot_free_to_node)(snap);
+    let renderer = (l().gtk_native_get_renderer)(a.win);
+    let tex = if node.is_null() || renderer.is_null() {
+        std::ptr::null_mut()
+    } else {
+        (l().gsk_renderer_render_texture)(renderer, node, std::ptr::null_mut())
+    };
+    let p = cstr(path);
+    let ok = !tex.is_null() && (l().gdk_texture_save_to_png)(tex, p.as_ptr()) != 0;
+    eprintln!(
+        "mdv-script: shot {path} {w}x{h} node={} renderer={} texture={} {}",
+        !node.is_null(), !renderer.is_null(), !tex.is_null(), if ok { "ok" } else { "FAILED" }
+    );
+    (l().g_object_unref)(paintable);
+    ok
+}
+
+unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
+    let script = std::env::var("MDV_GUI_SCRIPT").unwrap_or_default();
+    let steps: Vec<&str> = script.split(';').filter(|s| !s.is_empty()).collect();
+    let pos = SCRIPT_POS;
+    SCRIPT_POS += 1;
+    let Some(step) = steps.get(pos) else { return 0 };
+    let (kind, arg) = step.split_once(':').unwrap_or((step, ""));
+    eprintln!("mdv-script: {step}");
+    let a = &*app();
+    match kind {
+        "action" => {
+            let n = cstr(arg);
+            (l().g_action_group_activate_action)(a.win, n.as_ptr(), std::ptr::null_mut());
+        }
+        "find" => {
+            let t = cstr(arg);
+            (l().gtk_editable_set_text)(a.entry, t.as_ptr());
+            let lbl = CStr::from_ptr((l().gtk_label_get_text)(a.hits)).to_string_lossy().into_owned();
+            eprintln!("mdv-script: hits label = {lbl:?}");
+        }
+        "next" => click_find_next(std::ptr::null_mut(), std::ptr::null_mut()),
+        "esc" => {
+            key_press(std::ptr::null_mut(), KEY_ESCAPE, 0, 0, std::ptr::null_mut());
+        }
+        "shot" => {
+            if !snapshot_png(arg) && SHOT_RETRIES < 10 {
+                SHOT_RETRIES += 1;
+                SCRIPT_POS -= 1; // no frame drawn yet: try again next tick
+            } else {
+                SHOT_RETRIES = 0;
+            }
+        }
+        "quit" => {
+            (l().gtk_window_close)(a.win);
+            return 0;
+        }
+        _ => eprintln!("mdv-script: unknown step {step}"),
+    }
+    1
+}
+
 // ----------------------------------------------------------------- run ---
 
 /// Open the GNOME preview window. Blocks until the window is closed.
@@ -1093,7 +1245,7 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
     if LIB.set(lib).is_err() {
         return Err("gui::run called twice".into());
     }
-    if unsafe { (l().gtk_init_check)(std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) } == 0
+    if unsafe { (l().gtk_init_check)() } == 0
     {
         return Err("no GNOME display available (need a Wayland or X11 session)".into());
     }
@@ -1119,7 +1271,7 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         idx: 0,
         content,
         mtime: None,
-        ptags: HashSet::new(),
+        ptags: HashMap::new(),
         status_shown: false,
         find_shown: false,
     });
