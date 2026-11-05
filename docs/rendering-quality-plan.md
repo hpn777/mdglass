@@ -1,174 +1,231 @@
 # Desktop rendering quality: grids (tables) and diagrams (ASCII art)
 
-Status: proposal. Scope: `--gui` back end (`src/gui.rs`), with small shared
-changes in `src/doc.rs`. The terminal back end is the fidelity reference.
+Status: v2, revised after independent review. Scope: `--gui` back end
+(`src/gui.rs`), shared logic in `src/doc.rs` / `src/ansi.rs`, plus
+`tests/gui_abi_audit.py` and `tests/gui_smoke.py`. The terminal back end is
+the fidelity reference.
 
 ## Current state
 
-The GUI renders the whole document into one `GtkTextView` (word wrap on,
-horizontal scrollbar off). Tables are laid out by `doc::table_text()` into
-box-drawn **plain text** rows inserted with the `mono` tag; code blocks
-(including diagrams) are inserted as plain monospace lines. Everything that
-does not fit the window is soft-wrapped by GTK.
+The GUI renders the whole document into one `GtkTextView` (view-wide
+`WRAP_WORD_CHAR`, horizontal policy `POLICY_NEVER`). Tables are laid out by
+`doc::table_text()` into box-drawn plain-text rows inserted with the `mono`
+tag; code blocks (including diagrams) are inserted as plain monospace lines.
+Everything that does not fit the window is soft-wrapped by GTK.
 
-## Measured defects (1024x768 window, Ubuntu, DejaVu Sans Mono as Monospace)
+## Verified defects (1024x768 Broadway window, Ubuntu, DejaVu Sans Mono)
 
-Evidence gathered from a real Broadway screenshot of `tests`-style documents
-plus the code.
+1. **Wide tables wrap and break.** A 23-column table bottoms out at the
+   column-width floor (3 cols, `doc.rs:982,989-996`) = 139 layout columns
+   > the fixed 120-col budget (`gui.rs:687`); its border lines are cut at the
+   viewport edge (measured last pixel x=991) and rows wrap mid-cell. H-scroll
+   is `POLICY_NEVER` (`gui.rs:976`); zooming in reproduces this for tables
+   that fit at 100 %.
 
-1. **Wide tables wrap and break.** A 23-column table (~1155 px natural) has
-   its border lines cut at the viewport edge (x=991) and wrapped mid-row:
-   `╭───...╮` continues on the next visual line and every `│` loses its
-   column. Causes: fixed layout width `Cfg::new(false, 120, true)`
-   (`gui.rs:687`) is unrelated to the real viewport, horizontal policy is
-   `POLICY_NEVER` (`gui.rs:976`) and wrap is `WRAP_WORD_CHAR` (`gui.rs:979`).
-   Zooming in has the same effect on tables that fit at 100 %.
+2. **Wide/fallback glyphs drift columns.** One CJK cell moved the right
+   border from x=788 to x=768 (~2.5 mono columns, 20 px). `fc-match
+   "monospace:lang=zh"` = DejaVu Sans Mono (no CJK coverage) → Pango falls
+   back to a font whose advance ≠ 2x mono; `char_width` says 2 columns,
+   pixels say something else, and space padding cannot fix the sum.
 
-2. **CJK (and any non-covered script) drifts columns.** With one CJK cell,
-   the table's right border moves from x=788 to x=768 (4 columns visible
-   drift). `fc-match "monospace:lang=zh"` resolves to DejaVu Sans Mono, which
-   has no CJK glyphs, so Pango falls back to a proportional font whose advance
-   is not 2x the mono advance. `doc`'s `char_width` (2 columns) and the actual
-   pixel advance disagree; space padding cannot re-align the border.
+3. **Long lines in code/diagrams wrap** like any text (`gui.rs:647-653`) and
+   destroy box-drawing art; no way to view it intact.
 
-3. **Long lines in code/diagrams wrap and destroy the drawing.** Diagrams are
-   inserted like any code (`gui.rs:647-653`); a line wider than the viewport
-   wraps inside the box-drawing art. No way to see it intact.
+4. **GUI drops table styling.** `table_text()` flattens cells with
+   `spans_plain` (`doc.rs:1012-1024`): no bold header (`TableRow::Cells
+   {header}` unused in GUI), no `role-code`/`role-link` in cells, frame at
+   full contrast, loud `┝━┿━┥` separator. Terminal has faint frame + bold
+   header (`render.rs:175-212`).
 
-4. **GUI drops all table styling that the model carries.** `table_text()`
-   flattens cells with `spans_plain` (`doc.rs:1012-1024`): no bold header
-   (the `TableRow::Cells { header }` flag is unused in the GUI), no inline
-   code background, no link color; the frame is full-contrast foreground and
-   the header separator `┝━┿━┥` is visually loud. The terminal back end has
-   all of this (`table_ansi`, `render.rs:175-212`: faint frame, bold header).
+5. **Quote bars missing on several inner block types.** No bar on code lines
+   or table rows (only margin, `gui.rs:647-663`); none on blank lines or
+   rules inside quotes (`Line::Blank`/`Line::Rule` arms); on GTK-wrapped
+   paragraph continuations only the first visual line has a bar. The terminal
+   bars every single row (`render.rs:143-150`, pinned by
+   `render/tests.rs:211-215`).
 
-5. **Quote bars are missing next to code blocks and tables inside quotes.**
-   `emit()` inserts the `┃ ` lead only through `emit_spans()` (paragraphs,
-   headings); the `Line::Code` and `Line::Table` arms only add a left margin
-   (`gui.rs:647-663`), so a diagram inside a quote floats with an empty
-   gutter. The terminal prefixes every inner row with the bar (`render.rs:143`).
+6. **Cell text truncated even with room**: 60-col cap (`doc.rs:986`) plus
+   `truncate_to` ellipsis (`doc.rs:1025`).
 
-6. **Cell text is truncated even when there is room.** Column width caps at
-   60 columns (`doc.rs:986`) and cells are cut with `…` (`doc.rs:1025`) —
-   information loss that is unnecessary on a wide window.
+7. **Fragile mono assumptions**: `MONO_ADVANCE=0.6` assumes DejaVu; `lead`
+   pins DejaVu (`gui.rs:451`) but `mono`/`role-code`/`cb` use generic
+   `Monospace` — different systems may resolve to different advances or lose
+   box-drawing coverage. Zoom changes only CSS font size; layout is never
+   recomputed.
 
-7. **Font assumptions are fragile.** `MONO_ADVANCE = 0.6` assumes DejaVu; the
-   `lead` tag pins "DejaVu Sans Mono" (`gui.rs:451`) but `mono`, `role-code`
-   and code-block tags use generic `Monospace` (`gui.rs:430-455`), which on
-   other systems (Flatpak, Fedora) may resolve elsewhere and lose box-drawing
-   coverage or a different advance. Zoom only changes CSS font size; the text
-   layout (table budgets, wrap) is never recomputed.
+8. **`mono`/`role-code`/`cb` carry `scale 0.92`** while `col_px()` and all
+   margins assume the unscaled advance (`gui.rs:434,455,500,469-471`): an
+   8 % systematic mismatch between table pixel widths and every column→pixel
+   computation.
+
+9. **`insert_text` silently drops the 7th+ tag name** (fixed 6-name varargs
+   padding, `gui.rs:550-567`). Styled table pieces inside quotes can reach
+   7-8 tags.
 
 ## Goal
 
-Grids and diagrams in the GUI look exactly as intended at any window size and
-zoom level: borders connected, columns aligned, no wrapping through art,
-styling (bold headers, inline code, links, faint frame) at least on par with
-the terminal. Everything stays selectable and findable buffer text.
+Grids and diagrams in the GUI look as intended at any window size and zoom:
+borders connected, columns aligned, no wrapping through art, styled at least
+on par with the terminal. Everything stays selectable, findable buffer text.
 
-Non-goals (keep the "no WebKit, one small binary" promise): Mermaid/SVG
-rendering, embedded raster images, syntax highlighting.
+Non-goals (keep "no WebKit, one small binary"): Mermaid/SVG, embedded
+images, syntax highlighting.
 
-## Plan
+## Verified API facts (this GTK/Pango, introspected)
 
-### Phase 1 — fidelity fixes inside the current architecture
+- `GtkTextTag` **has** `wrap-mode`/`wrap-mode-set` and
+  `letter-spacing`/`letter-spacing-set` (gint, Pango units, 1/1024 px); it
+  has **no** `attributes` property in GTK4 — fitting must use
+  `letter-spacing` on tags, not PangoAttrLists.
+- Mixing per-tag `wrap-mode=NONE` paragraphs with a wrapped view is
+  self-defeating anyway: a non-wrapping paragraph inflates the view's minimum
+  width, so with an automatic h-scrollbar the whole view allocates to that
+  width and body prose stops wrapping at the window. Hence **pre-wrap in
+  Rust** (below).
+- Body text renders in the proportional UI font, so column-count pre-wrap is
+  wrong; wrapping must be **pixel-measured** (Pango does it: `set_width` +
+  `WORD_CHAR` wrap, break byte-ranges read from `PangoLayoutLine.offset/
+  length`).
+- Resize observation: GTK4 has no `size-allocate` signal and
+  `notify::default-width` does not fire on user resize; use **`notify::width`
+  on the view**, debounce with `g_timeout_add`.
+- Tag color/letter-spacing properties are live: updating an existing tag
+  re-renders without re-inserting text. Adwaita dark state:
+  `adw_style_manager_get_default()` + `get_dark()`, live via
+  `notify::dark`.
+- `gdk_texture_save_to_png` output must be decoded in tests with stdlib only
+  (`zlib` + `struct`).
 
-Small, low-risk, each independently shippable.
+## Phase 0 — shared pure-Rust plumbing (`doc.rs`, `ansi.rs`) + test audit
 
-1. **Quote bars for all blocks.** In `emit()`, prepend the `┃ ` lead run
-   (`lead` + `role-bar` tags, as `emit_spans` does) to every code line and
-   every table row when `depth > 0`. (`gui.rs`)
+No behavior change; everything the later phases need, testable without GTK:
 
-2. **Styled table emission.** Add `doc::table_cells(t) -> iterator yielding
-   per-row pieces` (frame pieces vs cell pieces with their spans and the
-   `header` flag); have the GUI insert each piece with its own tags:
-   - bold header row (reuse `h` weight via the `bold` tag),
-   - new `role-frame` tag: faint frame color, ~55 % of foreground,
-   - inline spans inside cells keep `role-code` / `role-link`,
-   - lighter header separator `├─┼─┤` (keep `┝` variant only if the header is
-     not bold).
-   Keep `table_text()` as the plain fallback for `--plain`/no-color paths.
+1. `pub fn truncate_spans(spans: &[Span], w: usize) -> Vec<Span>` —
+   `char_width`-based, preserves style/role/url, appends a single `…` span
+   (keeping the cut span's style) when cutting.
+2. `pub enum TablePiece { Frame(String), Cell { spans: Vec<Span>, pad_l:
+   usize, pad_r: usize, header: bool } }` and
+   `pub fn table_pieces(t: &Table) -> Vec<Vec<TablePiece>>` — row-by-row
+   fragments sharing `table_text()`'s pad/truncate math: Frame = border text
+   or a `│` separator; Cell = spans truncated to the column width,
+   alignment split into `pad_l`/`pad_r` **including** the one-space gutters,
+   so back ends can paint padding outside code backgrounds. `table_text()`
+   stays for the plain terminal path (or is rewritten on top of this).
+3. `pub fn spans_slice(spans: &[Span], from: usize, to: usize) -> Vec<Span>`
+   — byte-range extraction over concatenated text, styles kept, empty dropped.
+4. `pub fn wide_runs(s: &str) -> Vec<(usize, usize)>` (ansi.rs) — byte ranges
+   of maximal runs of `char_width==2` chars (CJK/emoji are the fallback-risk
+   runs Phase 3 fits).
+5. `tests/gui_abi_audit.py`: `require` and walk **Pango** as well, and index
+   **constructors** (`get_n_constructors`/`get_constructor`) as well as
+   methods, so new pango/adw symbols are arg-count-checked instead of
+   tripping the `unknown → exit 1` path.
 
-3. **Consistent mono font.** Pin `"DejaVu Sans Mono, Noto Sans Mono, Monospace"`
-   in the `mono`, `role-code` and code-block margin tags (same as `lead`).
-   Replace `MONO_ADVANCE` with a measured advance: render a reference string
-   with a PangoLayout from the view (`pango_layout_new`,
-   `pango_layout_set_text`, `pango_layout_get_pixel_size` — three more dlopen
-   syms) once per zoom level and use it in `col_px()`.
+Unit tests for 1-4 in `doc.rs`/`ansi.rs` (`#[cfg(test)] mod tests`).
 
-4. **Viewport-aware table width.** Derive the layout budget from the real
-   view: `cols = (view_width - margins) / col_px()` instead of the fixed 120,
-   re-`load_current()` on window size change (connect `notify::default-width`
-   or a size-allocate tick, debounced ~150 ms) and after zoom actions. Tables
-   that still exceed even the minimum width (many narrow columns) keep today's
-   wrap until Phase 2; a table that fits never wraps again.
+## Phase 1 — fidelity fixes inside the current wrapped-view architecture
 
-5. **Theme-aware tag colors.** Query `adw_style_manager_get_dark()` (one more
-   sym) and pick light/dark variants for `role-frame`, `role-faint`, link and
-   backgrounds instead of hardcoded hex/rgba, so grids look right in dark mode.
+1. **Quote bars on every block type** (`gui.rs emit`): prepend the
+   `┃ `x`depth` lead run (`lead`+`role-bar` tags) to code lines, table rows,
+   blank and rule lines inside quotes; on those lines set the tag to
+   `left-margin = 0, indent = -cols(depth*2)` so bar+text line up exactly
+   like paragraphs (and like the terminal). Phase 2 extends this to
+   per-pre-wrapped-line bars automatically.
+2. **Styled table emission** via `table_pieces`: Frame pieces get a new
+   `role-frame` faint tag; Cell pieces insert `pad` spaces in the plain
+   `mono` tag, then per-span tags (`bold` when `header`, `role-code`,
+   `role-link`); lighter `├─┼─┤` header separator (bold header carries the
+   visual weight). Raise `insert_text` arity to 10 names with a debug assert.
+3. **Consistent, measured mono**: drop `scale 0.92` from `mono`,
+   `role-code`, `cb` (terminal fidelity; kills defect 8); pin family
+   `"DejaVu Sans Mono, Noto Sans Mono, Monospace"` on `mono`/`role-code`/`cb`
+   like `lead`; measure the real advance with `gtk_widget_create_pango_layout`
+   + `pango_layout_set_font_description`/`from_string`/`set_absolute_size` +
+   `pango_layout_get_size` (Pango units, unrounded; explicit
+   `dlopen("libpango-1.0.so.0")`) and feed `col_px()` (replaces
+   `MONO_ADVANCE`).
+4. **Viewport-aware table width**: budget = `(view_width - margins) /
+   col_px()`; connect `notify::width` on the view, re-render debounced
+   (~150 ms) **only when the column budget changes**, from a cached source
+   string (not re-read from disk); seed from `gtk_window_get_default_size()`
+   because the first `load_current()` runs before allocation. Zoom actions
+   re-render too (budget + margins + measurements change).
+5. **Theme-aware colors**: light/dark variants for `role-frame`, `role-faint`,
+   link, backgrounds; query `adw_style_manager_get_dark()` at tag creation
+   and update existing tags in place on `notify::dark`.
 
-### Phase 2 — no-wrap islands: diagrams and wide tables done right
+## Phase 2 — no-wrap islands: pre-wrapped prose, unwrapped grids/diagrams
 
-GTK cannot mix wrapped paragraphs and a horizontal scrollbar sanely (one long
-non-wrapping line raises the view's minimum width and un-wraps everything).
-The robust design is what the terminal already does: **wrap in Rust, let GTK
-scroll.**
+1. **Pixel-aware pre-wrap**: for each paragraph/heading/list item build the
+   plain text, wrap it with a `PangoLayout` (`gtk_widget_create_pango_layout`
+   → inherits the widget font incl. zoom CSS size; headings set an absolute
+   font size = base x heading scale; `pango_layout_set_width(budget px)` +
+   `pango_layout_set_wrap(WORD_CHAR)`); take `PangoLayoutLine.offset/length`
+   byte ranges (documented struct offsets 16/20; defended by an end-to-end
+   test) and emit `spans_slice` per visual line with the existing hanging-
+   indent tags. Bars for quotes are emitted per line (defect 5 done right).
+2. **View switches to `WRAP_NONE`**, scrolled window horizontal policy
+   `POLICY_AUTOMATIC`: code blocks and tables are inserted unwrapped — wide
+   art scrolls horizontally intact; with nothing wide, no scrollbar appears.
+   Code/table lines keep a no-wrap guarantee trivially (view-level NONE).
+3. **State preservation across re-renders** (resize, zoom, reload): cache the
+   source string; restore cursor offset and top line (save offset + first
+   visible iter before `set_text`, `scroll_to_iter` after).
+4. Accepted consequences (documented in README/man): find matches words but
+   not phrases spanning a wrap point; copy/paste contains the wrap's hard
+   breaks (same semantics as the terminal back end); re-render on resize
+   clears the current text selection; wide blocks always show the
+   horizontal scrollbar.
 
-1. Implement span-aware wrapping in `doc.rs`/`ansi.rs`: `wrap_spans(spans,
-   width, indent) -> Vec<Vec<Span>>`, word-boundary, `char_width`-based — the
-   pure-Rust twin of `ansi::wrap_indent`.
-2. GUI: set the view to `WRAP_NONE`, pre-wrap every paragraph/heading/list
-   item to the viewport column budget (from Phase 1.4), insert hard breaks.
-   Set the scrolled window's horizontal policy to `AUTOMATIC`.
-   Code blocks and tables are emitted unwrapped: a diagram or wide grid wider
-   than the window now scrolls horizontally intact; when nothing is wide, no
-   scrollbar appears.
-3. Re-render (debounced) on resize and zoom so paragraph wrap width follows
-   the viewport. Documents are small; a full re-render is sub-millisecond for
-   anything realistic.
-4. Consequence to accept and document: copy/paste and find see the wrap as
-   hard breaks — same semantics as `mdglass -n` output and the pager.
+## Phase 3 — pixel-exact columns for fallback fonts
 
-### Phase 3 — pixel-exact columns for mixed scripts
+Per-**run** letter-spacing, not per-line (per-line spacing can only align the
+outer border; interior `│` must land at exact cumulative columns):
 
-Fixes defect 2 for good (CJK, emoji, future fallbacks):
-
-- Option A (recommended, keeps text semantics): fit each emitted line to
-  exactly `n x col_px` pixels — measure the line with a PangoLayout and
-  distribute the delta via `PANGO_ATTR_LETTER_SPACING` on that line's
-  attributes. Borders then align regardless of fallback fonts. Needs a small
-  `pango_layout_*` + `pango_attr_list_*` FFI addition and a per-line tag.
-- Option B (rejected, documented for the record): embed real `GtkGrid`
-  widgets at child anchors. Pixel-perfect but loses text selection, find
-  hits, and zoom plumbing — against the grain of a text viewer.
+- Table **cells**: target `(w+2) x col_px`; code/diagram lines: each
+  `wide_runs` segment gets target `2n x col_px`; quote bars and pure-DejaVu
+  text need nothing (they are exact by construction after Phase 1.3).
+- Mechanism: measure the run with the same `PangoLayout` conditions as it
+  renders (same context, font description incl. family), `delta =
+  target - measured`; if `|delta| <= 1px` skip; else spacing =
+  `delta*PANGO_SCALE/n` (Pango units — quantization error < 0.1 px per
+  column, negligible) applied via a **cached `letter-spacing` tag per
+  spacing value** (`fit{sp}`, live props, no PangoAttrList — GTK4 tags have
+  no `attributes` property). Spacing shifts the text that follows, so
+  cumulative piece positions land on the column grid.
+- Test tolerance ±1 px (layout rounding); `pango_layout_get_size` (not
+  `get_pixel_size`, which rounds).
+- Rejected alternative: real `GtkGrid` child anchors — breaks selection/find.
 
 ## Test plan
 
-- Unit: `wrap_spans` widths (including wide chars, hard breaks);
-  `table_cells` piece decomposition; budget calc from fake view widths.
-- `tests/gui_smoke.py` fixture additions: a 23-column table, a box-drawing
-  diagram, a table with a CJK cell, a diagram inside a blockquote.
-- New numeric, image-free assertions on the existing screenshot hook (no
-  vision model needed): for the fitting table, every text row's right border
-  x is identical; the diagram's left border column has no gaps between its
-  top and bottom border rows; quote bar pixels present at the expected column
-  beside code lines inside quotes.
-- `make check` stays green; `gui_abi_audit.py` covers the new dlopen'd
-  symbols automatically.
+- Unit: Phase 0 functions (wide chars, style preservation, alignment pads,
+  truncation, `wide_runs` byte ranges); heading/body wrap offset extraction.
+- `tests/gui_abi_audit.py` upgraded in Phase 0 so every new dlopen'd symbol
+  is arg-count checked, not waved through.
+- `tests/gui_smoke.py`: stdlib-only PNG decode helper (zlib/struct) +
+  fixtures: wide 23-col table (assert it no longer touches the right edge
+  wrapped: h-scroll present, border row width == table natural width), a
+  box-drawing diagram (vertical border column has no gaps between top and
+  bottom border rows), a table with one CJK cell (all rows' right-edge x
+  equal within ±1 px; valid whether CJK glyphs or tofu render), a diagram
+  inside a blockquote (bar pixels at the lead column on every art line),
+  light+dark spot checks. Assertions settle after one debounce interval.
+- `make check` stays green end to end.
 
-## Suggested order and effort
+## Order and effort
 
-| Step | Files | Risk | Est. |
-|------|-------|------|------|
-| 1. Quote bars for code/tables | gui.rs | low | S |
-| 2. Styled table emission | doc.rs, gui.rs | low | M |
-| 3. Mono pinning + measured advance | gui.rs | low | S |
-| 4. Viewport-aware width + re-render | gui.rs | med | M |
-| 5. Theme-aware colors | gui.rs | low | S |
-| 6. Pre-wrap + no-wrap view (Phase 2) | doc.rs, ansi.rs, gui.rs | med-high | L |
-| 7. Letter-spacing fit (Phase 3) | gui.rs | med | M |
-| Tests throughout | tests/ | — | M |
+| # | Step | Files | Risk | Est. |
+|---|------|-------|------|------|
+| 0 | pure helpers + abi-audit upgrade | doc.rs, ansi.rs, tests/ | low | M |
+| 1.1 | bars on all block types | gui.rs | low | S |
+| 1.2 | styled tables + arity | doc.rs, gui.rs | low | M |
+| 1.3 | mono pinning, scale drop, measured advance, pango dlopen | gui.rs | med | M |
+| 1.4 | viewport budget, notify::width, cached re-render | gui.rs | med | M |
+| 1.5 | theme-aware colors, notify::dark | gui.rs | low | S |
+| 2 | pre-wrap + WRAP_NONE + hscroll + state restore | doc.rs, gui.rs | med-high | L |
+| 3 | per-run letter-spacing fit | gui.rs | med | M |
+| T | smoke fixtures + numeric assertions | tests/ | med | M |
 
-Steps 1-5 make normal documents look clearly better with no architectural
-risk; step 6 is the one that definitively kills diagram/grid corruption;
-step 7 is only needed if tables with CJK/emoji matter.
+Phases are strictly sequential (same files); each lands green on
+`cargo test` + `make check` before the next starts.
