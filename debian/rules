@@ -28,3 +28,8 @@ override_dh_auto_install:
 
 override_dh_auto_clean:
 	rm -rf target debian/cargo-home
+
+# vendored crates ship Cargo.toml.orig, which dh_clean would delete as a
+# patch leftover; cargo's checksums need it
+override_dh_clean:
+	dh_clean -XCargo.toml.orig
