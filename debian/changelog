@@ -1,3 +1,13 @@
+mdglass (0.1.0-4) unstable; urgency=medium
+
+  * GNOME preview: tables and diagrams keep their shape (pixel-exact columns
+    for CJK and emoji, wide blocks scroll sideways instead of wrapping);
+    prose is wrapped to the window; colors follow the light/dark theme.
+  * Position and find match survive zoom, resize and reload; horizontal
+    rules are drawn; code inside quotes keeps its shading.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Fri, 06 Nov 2026 12:38:11 +0000
+
 mdglass (0.1.0-3) unstable; urgency=medium
 
   * Renamed from mdv (that name is taken on crates.io and PyPI); the
