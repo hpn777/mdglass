@@ -113,6 +113,13 @@ struct Lib {
     gtk_text_view_get_visible_rect: unsafe extern "C" fn(Ptr, *mut c_int),
     gtk_text_view_get_line_at_y: unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int),
     gtk_text_view_scroll_to_mark: unsafe extern "C" fn(Ptr, Ptr, f64, c_int, f64, f64),
+    gtk_text_view_get_iter_location: unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int),
+    gtk_scrolled_window_get_hadjustment: unsafe extern "C" fn(Ptr) -> Ptr,
+    gtk_scrolled_window_get_vadjustment: unsafe extern "C" fn(Ptr) -> Ptr,
+    gtk_adjustment_get_value: unsafe extern "C" fn(Ptr) -> f64,
+    gtk_adjustment_set_value: unsafe extern "C" fn(Ptr, f64),
+    gtk_adjustment_get_upper: unsafe extern "C" fn(Ptr) -> f64,
+    gtk_adjustment_get_page_size: unsafe extern "C" fn(Ptr) -> f64,
     gtk_text_buffer_create_mark: unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, c_int) -> Ptr,
     gtk_text_buffer_move_mark: unsafe extern "C" fn(Ptr, Ptr, *const TextIter),
     gtk_text_buffer_insert: unsafe extern "C" fn(Ptr, *mut TextIter, *const c_char, c_int),
@@ -276,6 +283,13 @@ fn load_lib() -> Result<Lib, String> {
             gtk_text_view_get_visible_rect: gs!("gtk_text_view_get_visible_rect", unsafe extern "C" fn(Ptr, *mut c_int)),
             gtk_text_view_get_line_at_y: gs!("gtk_text_view_get_line_at_y", unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int)),
             gtk_text_view_scroll_to_mark: gs!("gtk_text_view_scroll_to_mark", unsafe extern "C" fn(Ptr, Ptr, f64, c_int, f64, f64)),
+            gtk_text_view_get_iter_location: gs!("gtk_text_view_get_iter_location", unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int)),
+            gtk_scrolled_window_get_hadjustment: gs!("gtk_scrolled_window_get_hadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
+            gtk_scrolled_window_get_vadjustment: gs!("gtk_scrolled_window_get_vadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
+            gtk_adjustment_get_value: gs!("gtk_adjustment_get_value", unsafe extern "C" fn(Ptr) -> f64),
+            gtk_adjustment_set_value: gs!("gtk_adjustment_set_value", unsafe extern "C" fn(Ptr, f64)),
+            gtk_adjustment_get_upper: gs!("gtk_adjustment_get_upper", unsafe extern "C" fn(Ptr) -> f64),
+            gtk_adjustment_get_page_size: gs!("gtk_adjustment_get_page_size", unsafe extern "C" fn(Ptr) -> f64),
             gtk_text_buffer_create_mark: gs!("gtk_text_buffer_create_mark", unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, c_int) -> Ptr),
             gtk_text_buffer_move_mark: gs!("gtk_text_buffer_move_mark", unsafe extern "C" fn(Ptr, Ptr, *const TextIter)),
             gtk_text_buffer_insert: gs!("gtk_text_buffer_insert", unsafe extern "C" fn(Ptr, *mut TextIter, *const c_char, c_int)),
@@ -432,10 +446,14 @@ struct App {
     top_mark: Ptr,
     /// reused PangoLayout for wrap_spans_px (font and width are set per call)
     wlayout: Ptr,
-    /// a scroll to re-issue for a few frames after a re-render (see scroll_settled):
-    /// (mark, within_margin, use_align, yalign) and how many more times
-    rescroll: Option<(Ptr, f64, c_int, f64)>,
+    /// a scroll still converging after a re-render (see scroll_settled):
+    /// the mark, whether it goes to the top (else: just into view), how many
+    /// more ticks, the last vadjustment upper seen, and the top anchor being
+    /// restored (reused if another render comes before it settled)
+    rescroll: Option<(Ptr, bool)>,
     rescroll_left: u8,
+    rescroll_upper: f64,
+    pending_top: Option<(usize, i32)>,
     /// resize debounce: a new column budget must be seen on two ticks in a row
     seen_cols: usize,
     seen_count: u8,
@@ -530,8 +548,6 @@ unsafe fn fit_tag(sp: i64) -> Ptr {
 }
 
 unsafe fn make_tags() {
-    let base = tag("base"); // sentinel so varargs always have one name
-    let _ = base;
     let above: [c_int; 7] = [0, 14, 12, 10, 8, 8, 8];
     for lvl in 1..=6 {
         let t = tag(&format!("h{lvl}"));
@@ -717,13 +733,22 @@ unsafe fn insert_text(text: &str, tags: &[String]) {
     if text.is_empty() {
         return;
     }
+    // a NUL cannot cross the C boundary (cstr would drop the whole text):
+    // show it as U+FFFD, one char either way, so offsets stay in step
+    let fixed;
+    let text = if text.contains('\0') {
+        fixed = text.replace('\0', "\u{FFFD}");
+        fixed.as_str()
+    } else {
+        text
+    };
     let a = &mut *app();
     a.emit_off += text.chars().count() as c_int;
     let mut it = TextIter::default();
     (l().gtk_text_buffer_get_end_iter)(a.buffer, &mut it);
     let t = cstr(text);
     if tags.is_empty() {
-        (l().gtk_text_buffer_insert)(a.buffer, &mut it, t.as_ptr(), text.len() as c_int);
+        (l().gtk_text_buffer_insert)(a.buffer, &mut it, t.as_ptr(), t.as_bytes().len() as c_int);
         return;
     }
     // a fixed-arity call, NULL right after the real names: GTK stops reading
@@ -1056,15 +1081,18 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                 insert_text("\n", &[]);
             }
             Line::Rule => {
-                // a faint mono line across the text width, like the terminal;
-                // the bar run carries `rule` too, since a paragraph's spacing
-                // comes from the tags on its first char
+                // a faint mono line across the text width, like the terminal.
+                // Inside a quote it gets no `rule` spacing: the bar shares the
+                // line, and the gap above and below would break the bar
+                let base: Vec<String> = if depth > 0 { vec![] } else { vec!["rule".into()] };
                 if depth > 0 {
-                    insert_text(&bar_text(depth), &["rule".into(), "lead".into(), "role-bar".into()]);
+                    insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
                 }
                 let n = (*app()).budget.saturating_sub(1 + depth * 2).max(3);
-                insert_text(&"─".repeat(n), &["rule".into(), "lead".into(), "role-frame".into()]);
-                insert_text("\n", &["rule".to_string()]);
+                let mut t = base.clone();
+                t.extend(["lead".to_string(), "role-frame".to_string()]);
+                insert_text(&"─".repeat(n), &t);
+                insert_text("\n", &base);
             }
             Line::Heading { lvl, spans } => {
                 let lvl = (*lvl).clamp(1, 6);
@@ -1190,39 +1218,77 @@ fn from_anchor(anchor: (usize, i32), blocks: &[i32], synth: &[(i32, i32)], end: 
     (phys + left).clamp(0, stop.max(start))
 }
 
-/// Scroll `mark` into view now, and again on the next few frames. Right after
-/// the buffer is rebuilt GTK only has estimated heights for the new lines,
-/// so a single scroll lands short (measured: paragraph 21 instead of 200 in a
-/// 300-paragraph document); repeating it while lines are validated converges
-/// on the real position. Idempotent once it is right.
-unsafe fn scroll_settled(mark: Ptr, within: f64, use_align: c_int, yalign: f64) {
+/// Bring `mark` to the top of the view (`top`) or just into view (find),
+/// and keep at it on the next ticks until it holds. Right after the buffer is
+/// rebuilt GTK only has estimated heights for lines it has not laid out, so
+/// one scroll lands short (measured: paragraph 21 instead of 200 in a
+/// 300-paragraph document) and the vadjustment's range is still too small.
+/// The top case moves only the vertical adjustment, by the mark's distance
+/// from the top of the visible rect: GTK's scroll_to_mark with use_align
+/// would also align horizontally and hide the left margin of wide content.
+unsafe fn scroll_settled(mark: Ptr, top: bool) {
     let a = &mut *app();
     if mark.is_null() || a.view.is_null() {
         return;
     }
-    (l().gtk_text_view_scroll_to_mark)(a.view, mark, within, use_align, 0.0, yalign);
+    if !top {
+        (l().gtk_text_view_scroll_to_mark)(a.view, mark, 0.3, 0, 0.0, 0.5);
+    }
     let idle = a.rescroll.is_none();
-    a.rescroll = Some((mark, within, use_align, yalign));
-    a.rescroll_left = 6;
+    a.rescroll = Some((mark, top));
+    a.rescroll_left = 30; // 60 ms ticks: gives up after ~1.8 s
+    a.rescroll_upper = -1.0;
     if idle {
         (l().g_timeout_add)(60, Some(on_rescroll), std::ptr::null_mut());
     }
 }
 
+/// One convergence step of scroll_settled; true once the mark holds.
+unsafe fn rescroll_step(mark: Ptr, top: bool) -> bool {
+    let a = &mut *app();
+    let mut it = TextIter::default();
+    (l().gtk_text_buffer_get_iter_at_mark)(a.buffer, &mut it, mark);
+    let (mut loc, mut vis) = ([0 as c_int; 4], [0 as c_int; 4]); // GdkRectangle x, y, w, h
+    (l().gtk_text_view_get_iter_location)(a.view, &it, loc.as_mut_ptr());
+    (l().gtk_text_view_get_visible_rect)(a.view, vis.as_mut_ptr());
+    if !top {
+        if loc[1] >= vis[1] && loc[1] + loc[3] <= vis[1] + vis[3] {
+            return true;
+        }
+        (l().gtk_text_view_scroll_to_mark)(a.view, mark, 0.3, 0, 0.0, 0.5);
+        return false;
+    }
+    let delta = (loc[1] - vis[1]) as f64;
+    if delta.abs() <= 1.0 {
+        return true;
+    }
+    let adj = (l().gtk_scrolled_window_get_vadjustment)(a.scrolled);
+    if adj.is_null() {
+        return true;
+    }
+    let (value, upper) = ((l().gtk_adjustment_get_value)(adj), (l().gtk_adjustment_get_upper)(adj));
+    let max = (upper - (l().gtk_adjustment_get_page_size)(adj)).max(0.0);
+    if delta > 0.0 && value >= max - 0.5 && upper == a.rescroll_upper {
+        return true; // near the end: the mark cannot reach the top
+    }
+    a.rescroll_upper = upper;
+    (l().gtk_adjustment_set_value)(adj, (value + delta).clamp(0.0, max));
+    false
+}
+
 unsafe extern "C" fn on_rescroll(_data: Ptr) -> c_int {
     unsafe {
         let a = &mut *app();
-        match a.rescroll {
-            Some((mark, within, use_align, yalign)) if a.rescroll_left > 0 && !a.win.is_null() => {
-                a.rescroll_left -= 1;
-                (l().gtk_text_view_scroll_to_mark)(a.view, mark, within, use_align, 0.0, yalign);
-                1
-            }
-            _ => {
-                a.rescroll = None;
-                0
-            }
+        let Some((mark, top)) = a.rescroll else { return 0 };
+        let done = a.win.is_null() || a.rescroll_left == 0 || rescroll_step(mark, top);
+        let a = &mut *app();
+        if done {
+            a.rescroll = None;
+            a.pending_top = None;
+            return 0;
         }
+        a.rescroll_left -= 1;
+        1
     }
 }
 
@@ -1248,7 +1314,13 @@ unsafe fn render_source(src: &str, cols: usize, keep: bool) {
             (l().gtk_text_view_get_line_at_y)(a.view, &mut it, rect[1], &mut line_top);
             top = (l().gtk_text_iter_get_offset)(&it);
         }
-        saved = Some((to_anchor(cur, &a.block_starts, &a.synth), to_anchor(top, &a.block_starts, &a.synth)));
+        // a restore still converging: the view is not there yet, so its
+        // visible rect would save the wrong line; keep the anchor it aims at
+        let top_anchor = match (a.rescroll, a.pending_top) {
+            (Some((_, true)), Some(t)) => t,
+            _ => to_anchor(top, &a.block_starts, &a.synth),
+        };
+        saved = Some((to_anchor(cur, &a.block_starts, &a.synth), top_anchor));
     }
 
     (l().gtk_text_buffer_set_text)(a.buffer, c"".as_ptr(), 0);
@@ -1268,6 +1340,13 @@ unsafe fn render_source(src: &str, cols: usize, keep: bool) {
         ),
         None => (0, 0),
     };
+    a.pending_top = Some(saved.map(|s| s.1).unwrap_or((0, 0)));
+    if !keep && !a.scrolled.is_null() {
+        let h = (l().gtk_scrolled_window_get_hadjustment)(a.scrolled);
+        if !h.is_null() {
+            (l().gtk_adjustment_set_value)(h, 0.0); // another document: back to the left edge
+        }
+    }
     (l().gtk_text_buffer_get_iter_at_offset)(a.buffer, &mut it, cur);
     (l().gtk_text_buffer_place_cursor)(a.buffer, &it);
     (l().gtk_text_buffer_get_iter_at_offset)(a.buffer, &mut it, top);
@@ -1276,9 +1355,11 @@ unsafe fn render_source(src: &str, cols: usize, keep: bool) {
     } else {
         (l().gtk_text_buffer_move_mark)(a.buffer, a.top_mark, &it);
     }
-    scroll_settled(a.top_mark, 0.0, 1, 0.0);
-    if keep && a.find_shown {
-        do_search(false, false, true); // re-highlight, stay on the same match
+    scroll_settled(a.top_mark, true);
+    if a.find_shown {
+        // same document: re-highlight and stay on the same match; another
+        // document: its matches, from the top
+        do_search(!keep, false, keep);
     }
 }
 
@@ -1411,7 +1492,7 @@ unsafe fn do_search(from_top: bool, backward: bool, keep: bool) {
         (l().gtk_text_buffer_place_cursor)(a.buffer, &hits[k].1);
         // via the insert mark and scroll_settled: right after a re-render the
         // new lines only have estimated heights
-        scroll_settled((l().gtk_text_buffer_get_insert)(a.buffer), 0.3, 0, 0.5);
+        scroll_settled((l().gtk_text_buffer_get_insert)(a.buffer), false);
         format!("{} of {}", k + 1, hits.len())
     };
     let lc = cstr(&label);
@@ -1992,6 +2073,8 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         wlayout: std::ptr::null_mut(),
         rescroll: None,
         rescroll_left: 0,
+        rescroll_upper: -1.0,
+        pending_top: None,
         seen_cols: 0,
         seen_count: 0,
         status_shown: false,
