@@ -23,11 +23,13 @@ broadway = subprocess.Popen(["gtk4-broadwayd", DISPLAY], stdout=subprocess.DEVNU
 time.sleep(0.8)
 failures = 0
 
-def run(args, script, stdin=None, timeout=40):
+def run(args, script, stdin=None, timeout=40, scheme=None):
     env = dict(os.environ, GDK_BACKEND="broadway", BROADWAY_DISPLAY=DISPLAY,
                MDGLASS_GUI_SCRIPT=script,
                # portals of the host session are not needed and may be slow
                ADW_DISABLE_PORTAL="1", GDK_DEBUG="no-portals")
+    if scheme:  # pin light/dark so pixel checks do not depend on the host theme
+        env["ADW_DEBUG_COLOR_SCHEME"] = scheme
     p = subprocess.run([MDGLASS, "--gui", *args], env=env, input=stdin, capture_output=True,
                        timeout=timeout, cwd=work)
     return p.returncode, p.stderr.decode(errors="replace")
@@ -179,11 +181,13 @@ def quote_check(path):
         f"{bands} text bands beside the bar (need >= 5)")
 
 def prose_check(path):
-    """Pre-wrapped prose stops at the column budget; with WRAP_NONE the old
-    GTK-wrap overflow zone (between the wrap edge and the scrollbar) must stay
-    empty and no line may reach near the window edge."""
+    """Pre-wrapped prose stops at the column budget: view_cols leaves the 2x28
+    px margins plus 16 px, and wrap_px one more column, so no text pixel can
+    pass about w - 53 (x=971 at 1024 px). The old GTK wrap reached 979..991,
+    and the pre-fix nested lists / zoom / bold headings 1007..1022, so the
+    zone from w - 50 to the v-scrollbar (x >= w - 16) must stay empty."""
     img = pngread.open(path)
-    z0, z1 = 955, 1008  # overflow zone x 955..1007; the v-scrollbar sits at x >= 1012
+    z0, z1 = img.w - 50, img.w - 16
     hits, right = [], 0
     for y in range(56, img.h):
         xs = lit_xs(img, y, 4, img.w - 16)
@@ -192,10 +196,106 @@ def prose_check(path):
             zz = [x for x in xs if z0 <= x < z1]
             if zz:
                 hits.append((y, zz[0]))
-    ok = not hits and right <= img.w - 64
+    ok = not hits and right < z0
     return ok, (
-        f"rightmost text pixel x={right} (limit {img.w - 64}), lit pixels in overflow zone x {z0}..{z1 - 1}: "
+        f"rightmost text pixel x={right} (limit {z0 - 1}), lit pixels in overflow zone x {z0}..{z1 - 1}: "
         f"{len(hits)} rows {hits[:5]}")
+
+def text_lines(img, x0=26, x1=None):
+    """visual text lines as consecutive lit row bands: [(y0, y1, xs), ...] where
+    xs is the sorted union of lit x over the band"""
+    x1 = x1 or img.w - 16
+    out, cur = [], None
+    for y in range(56, img.h):
+        xs = lit_xs(img, y, x0, x1)
+        if xs:
+            if cur is None:
+                cur = [y, y, set(xs)]
+            else:
+                cur[1] = y
+                cur[2].update(xs)
+        elif cur is not None:
+            out.append((cur[0], cur[1], sorted(cur[2])))
+            cur = None
+    # drop the text caret: a run at most 2 px wide with >= 6 px of space on
+    # both sides (glyph strokes that thin always have a neighbour closer)
+    clean = []
+    for y0, y1, xs in out:
+        runs, start = [], xs[0]
+        for a, b in zip(xs, xs[1:] + [None]):
+            if b is None or b != a + 1:
+                runs.append((start, a))
+                start = b
+        keep = [r for i, r in enumerate(runs)
+                if r[1] - r[0] > 1
+                or (i > 0 and r[0] - runs[i - 1][1] < 6)
+                or (i + 1 < len(runs) and runs[i + 1][0] - r[1] < 6)]
+        xs = [x for r0, r1 in keep for x in range(r0, r1 + 1)]
+        if xs:
+            clean.append((y0, y1, xs))
+    return clean
+
+def is_bullet(img, y0, y1, x):
+    """orange role-bullet glyph around (x, y0..y1): red well above blue"""
+    return any(img.rgb(xx, y)[0] - img.rgb(xx, y)[2] > 50  # thin ◦ peaks near 78
+               for y in range(y0, y1 + 1) for xx in range(x, x + 6))
+
+def list_check(path):
+    """Wrapped list items: every continuation line must start at its item's
+    text column (first glyph after the bullet), within 2 px. Each pre-wrapped
+    line is its own paragraph, so before the fix continuations started under
+    the bullet (the tag's hanging indent never applied)."""
+    img = pngread.open(path)
+    items, bad = [], []
+    for y0, y1, xs in text_lines(img):
+        left = xs[0]
+        if is_bullet(img, y0, y1, left):
+            gap_after = [b for a, b in zip(xs, xs[1:]) if b - a > 4 and a < left + 20]
+            items.append([left, gap_after[0] if gap_after else left, 0])
+        elif items:
+            items[-1][2] += 1
+            if abs(left - items[-1][1]) > 2:
+                bad.append((y0, left, items[-1][1]))
+    ok = len(items) >= 3 and all(n >= 2 for _, _, n in items) and not bad
+    return ok, (f"{len(items)} items (bullet x, text x, continuation lines): "
+                f"{[tuple(i) for i in items]}; misaligned continuations (y, x, want x): {bad[:4]}")
+
+def shade_bands(img, x0=60, x1=900):
+    """row bands tinted like a code block: most sampled pixels differ from the
+    background by a little (paragraph shading), not like text"""
+    r0, g0, b0 = img.rgb(6, img.h - 8)
+    rows = []
+    for y in range(56, img.h - 10):
+        n = sum(1 for x in range(x0, x1, 4)
+                if 8 < sum(abs(c - c0) for c, c0 in zip(img.rgb(x, y), (r0, g0, b0))) < 90)
+        if n > (x1 - x0) // 8:
+            rows.append(y)
+    bands = []
+    for y in rows:
+        if bands and y == bands[-1][1] + 1:
+            bands[-1][1] = y
+        else:
+            bands.append([y, y])
+    return [tuple(b) for b in bands]
+
+def quote_blocks_check(path):
+    """Inside a quote the code block keeps its shaded background (paragraph
+    styling comes from a line's first char, which is now the bar) and the
+    rule is drawn (before: an empty shaded line, which GTK never painted)."""
+    img = pngread.open(path)
+    tall = [b for b in shade_bands(img) if b[1] - b[0] >= 24]
+    rules = [s for s in border_rows(img, 380)]
+    return bool(tall) and bool(rules), (
+        f"theme={theme(img)} code shading bands >= 25 px tall: {tall}; rule lines (run > 380 px): "
+        f"{[(r[0], r[2], r[3]) for r in rules]}")
+
+def hit_check(path):
+    """After a find and a zoom (full re-render) the match is still highlighted
+    and on screen: the yellow find-hit background is visible."""
+    img = pngread.open(path)
+    n = sum(1 for y in range(56, img.h - 60) for x in range(28, img.w - 20, 2)
+            if (lambda r, g, b: r - b > 60 and g - b > 30 and r > 110)(*img.rgb(x, y)))
+    return n >= 40, f"theme={theme(img)} find-hit highlight pixels on screen: {n} (need >= 40)"
 
 try:
     doc = os.path.join(work, "doc.md")
@@ -273,15 +373,34 @@ fn main() {}
 | 1 | 2 |
 """)
     qnames = ["q_cjk", "q_wide", "q_narrow", "q_quote", "q_prose"]
-    steps = []
-    for i, n in enumerate(qnames):
-        if i:
-            steps.append("action:next-file")
-        steps.append(f"shot:{p(n + '.png')}")
-    steps.append("quit")
-    rc, err = run([p(n + ".md") for n in qnames], ";".join(steps))
-    check("quality session exits cleanly", rc == 0, f"exit {rc}\n{err[-600:]}")
-    check("quality session has no GTK warnings", not gtk_noise(err), "\n     ".join(gtk_noise(err)[:5]))
+    for scheme in ("prefer-dark", "prefer-light"):
+        steps = []
+        for i, n in enumerate(qnames):
+            if i:
+                steps.append("action:next-file")
+            steps.append(f"shot:{p(n + '-' + scheme + '.png')}")
+        steps.append("quit")
+        rc, err = run([p(n + ".md") for n in qnames], ";".join(steps), scheme=scheme)
+        check(f"quality session ({scheme}) exits cleanly", rc == 0, f"exit {rc}\n{err[-600:]}")
+        check(f"quality session ({scheme}) has no GTK warnings", not gtk_noise(err), "\n     ".join(gtk_noise(err)[:5]))
+
+    # layouts that wrap: lists, bold headings, zoom, quotes, find + re-render
+    words = "word " * 90
+    open(p("r_list.md"), "w").write(f"- top level item {words}\n  - nested item {words}\n"
+                                    f"    - deeper item {words}\n")
+    open(p("r_head.md"), "w").write("# " + "Heading words go here " * 14 + "\n\n" + "**boldword** " * 90 + "\n")
+    open(p("r_zoom.md"), "w").write(("Lorem ipsum dolor sit amet consectetur adipiscing elit " * 8 + "\n\n") * 4)
+    open(p("r_quote.md"), "w").write("> para\n>\n> ```\n> code one\n> code two\n> ```\n>\n> ---\n>\n> after\n")
+    open(p("r_find.md"), "w").write("".join(f"Paragraph {i:03d} marker{i:03d} " + "filler text that wraps " * 12
+                                            + "\n\n" for i in range(1, 301)))
+    rnames = ["r_list", "r_head", "r_zoom", "r_quote", "r_find"]
+    steps = [f"shot:{p('r_list.png')}", "action:next-file", f"shot:{p('r_head.png')}",
+             "action:next-file", "action:zoom-in", f"shot:{p('r_zoom.png')}", "action:zoom-reset",
+             "action:next-file", f"shot:{p('r_quote.png')}", "action:next-file",
+             "action:find", "find:marker200", "action:zoom-in", f"shot:{p('r_find.png')}", "quit"]
+    rc, err = run([p(n + ".md") for n in rnames], ";".join(steps), scheme="prefer-dark")
+    check("wrap session exits cleanly", rc == 0, f"exit {rc}\n{err[-600:]}")
+    check("wrap session has no GTK warnings", not gtk_noise(err), "\n     ".join(gtk_noise(err)[:5]))
 
     def quality(name, fn, *paths):
         try:
@@ -292,10 +411,18 @@ fn main() {}
         if ok:  # these checks exist for their numbers: print them when green too
             print("     " + detail)
 
-    quality("CJK table rows end at the header separator edge", cjk_check, p("q_cjk.png"))
-    quality("wide box unwrapped, narrow box border unbroken", boxes_check, p("q_wide.png"), p("q_narrow.png"))
-    quality("quote bar covers every inner block line", quote_check, p("q_quote.png"))
-    quality("prose never enters the overflow zone", prose_check, p("q_prose.png"))
+    for scheme in ("prefer-dark", "prefer-light"):
+        q = lambda n: p(f"{n}-{scheme}.png")
+        quality(f"[{scheme}] CJK table rows end at the header separator edge", cjk_check, q("q_cjk"))
+        quality(f"[{scheme}] wide box unwrapped, narrow box border unbroken", boxes_check, q("q_wide"), q("q_narrow"))
+        quality(f"[{scheme}] quote bar covers every inner block line", quote_check, q("q_quote"))
+        quality(f"[{scheme}] prose never enters the overflow zone", prose_check, q("q_prose"))
+    quality("wrapped list lines start at their item's text column", list_check, p("r_list.png"))
+    quality("nested list lines stay out of the overflow zone", prose_check, p("r_list.png"))
+    quality("bold heading and bold prose stay out of the overflow zone", prose_check, p("r_head.png"))
+    quality("prose re-wrapped right after a zoom stays inside", prose_check, p("r_zoom.png"))
+    quality("code shading and rule inside a quote", quote_blocks_check, p("r_quote.png"))
+    quality("find match still highlighted on screen after a zoom", hit_check, p("r_find.png"))
 
     live = p("live.md")
     open(live, "w").write("# one\n")
