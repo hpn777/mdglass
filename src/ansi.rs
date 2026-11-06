@@ -75,7 +75,6 @@ pub fn char_width(c: char) -> usize {
 /// Byte ranges of maximal runs of double-width characters (CJK, emoji):
 /// these runs are the ones whose pixel advance cannot be trusted, because
 /// a fallback font rarely hits exactly 2x the mono advance.
-#[allow(dead_code)] // consumed by the Phase 3 per-run letter-spacing fit
 pub fn wide_runs(s: &str) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     let mut run: Option<(usize, usize)> = None;

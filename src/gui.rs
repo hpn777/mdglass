@@ -11,7 +11,8 @@ use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
 use std::path::Path;
 use std::time::SystemTime;
 
-use crate::doc::{parse, spans_plain, spans_slice, table_pieces, Cfg, Line, Role, Span, Style, TablePiece};
+use crate::ansi::char_width;
+use crate::doc::{parse, spans_plain, spans_slice, spans_width, table_pieces, Cfg, Line, Role, Span, Style, TablePiece};
 
 // ------------------------------------------------------------------ FFI ---
 
@@ -417,6 +418,8 @@ struct App {
     ptags: HashMap<String, (Ptr, usize, usize, usize, bool)>,
     /// colored tags with their light and dark foregrounds (apply_theme_colors)
     ctags: Vec<(Ptr, &'static str, &'static str)>,
+    /// per-run letter-spacing tags by spacing value in Pango units (fit_tag)
+    fit_tags: HashMap<i64, Ptr>,
     status_shown: bool,
     find_shown: bool,
 }
@@ -480,6 +483,31 @@ fn cbptr<T>(f: T) -> Ptr {
 unsafe fn tag(name: &str) -> Ptr {
     let n = cstr(name);
     (l().gtk_text_buffer_create_tag)((*app()).buffer, n.as_ptr(), std::ptr::null())
+}
+
+/// Tag name `fit_tag` registers for the letter-spacing value `sp` (the same
+/// string is needed by callers inserting text with tags by name).
+fn fit_name(sp: i64) -> String {
+    format!("fit{sp}")
+}
+
+/// Cached tag applying absolute letter-spacing of `sp` Pango units (1/1024 px)
+/// to every char it covers: each glyph is pushed so the whole run occupies
+/// exactly its nominal width, and everything after it lands back on the
+/// column grid. Spacing is absolute px, so one tag per value stays correct
+/// across zoom — a relayout recomputes `sp` and fetches or creates that tag.
+unsafe fn fit_tag(sp: i64) -> Ptr {
+    let a = &mut *app();
+    if let Some(&t) = a.fit_tags.get(&sp) {
+        return t;
+    }
+    let t = tag(&fit_name(sp));
+    if !t.is_null() {
+        set_i(t, "letter-spacing", sp as c_int);
+        set_i(t, "letter-spacing-set", 1);
+        a.fit_tags.insert(sp, t);
+    }
+    t
 }
 
 unsafe fn make_tags() {
@@ -570,6 +598,36 @@ unsafe fn measure_mono() {
     (*app()).mono_px = w as f64 / 200.0 / 1024.0;
     (l().pango_font_description_free)(desc);
     (l().g_object_unref)(layout);
+}
+
+/// Measure `text` as it renders: a PangoLayout from the view (same context
+/// and font options), the pinned mono family list, and the absolute size the
+/// CSS zoom size implies. Width in pixels, unrounded (`get_size` returns Pango
+/// units, 1/1024 px; `get_pixel_size` would round). NaN on any failure —
+/// callers treat NaN as "skip fitting", never panic.
+unsafe fn mono_run_px(text: &str) -> f64 {
+    let view = (*app()).view;
+    if view.is_null() {
+        return f64::NAN;
+    }
+    let layout = (l().gtk_widget_create_pango_layout)(view, std::ptr::null());
+    if layout.is_null() {
+        return f64::NAN;
+    }
+    let family = cstr(MONO_FAMILY);
+    let desc = (l().pango_font_description_from_string)(family.as_ptr());
+    if desc.is_null() {
+        (l().g_object_unref)(layout);
+        return f64::NAN;
+    }
+    (l().pango_font_description_set_absolute_size)(desc, BASE_FONT_PX * (*app()).zoom * 1024.0);
+    (l().pango_layout_set_font_description)(layout, desc);
+    (l().pango_layout_set_text)(layout, text.as_ptr() as *const c_char, text.len() as c_int);
+    let (mut w, mut h) = (0 as c_int, 0 as c_int);
+    (l().pango_layout_get_size)(layout, &mut w, &mut h);
+    (l().pango_font_description_free)(desc);
+    (l().g_object_unref)(layout);
+    w as f64 / 1024.0
 }
 
 /// Width of one monospace column at the current zoom, in pixels.
@@ -705,6 +763,68 @@ fn style_tag_names(s: &Span) -> Vec<String> {
 /// columns where a paragraph would hang its bar (the terminal does the same).
 fn bar_text(depth: usize) -> String {
     "┃ ".repeat(depth)
+}
+
+/// True when `text` can render wider or narrower than its nominal columns:
+/// a double-width char (CJK, emoji: DejaVu lacks them, and the fallback's
+/// advance is not 2x mono) or any char >= U+2000 outside the box-drawing
+/// block U+2500..U+257F (DejaVu draws those exactly). Pure ASCII, Cyrillic or
+/// box runs never drift: they are never measured and never fitted, which
+/// keeps the cost at zero and the risk of touching exact text at zero.
+fn suspect(text: &str) -> bool {
+    text.chars()
+        .any(|c| char_width(c) == 2 || (c >= '\u{2000}' && !('\u{2500}'..='\u{257F}').contains(&c)))
+}
+
+/// The cached letter-spacing tag name that forces `text` to occupy exactly
+/// `target` px, or None when no fitting happens: empty or non-suspect text,
+/// a failed measurement, |delta| < 1 px (layout rounding, not drift), or a
+/// tag that could not be created. Callers then behave exactly as before.
+unsafe fn fit_run(text: &str, target: f64) -> Option<String> {
+    if text.is_empty() || !suspect(text) {
+        return None;
+    }
+    let measured = mono_run_px(text);
+    if !measured.is_finite() {
+        return None;
+    }
+    let delta = target - measured;
+    if delta.abs() < 1.0 {
+        return None;
+    }
+    let sp = (delta * 1024.0 / text.chars().count() as f64).round() as i64;
+    let name = fit_name(sp);
+    (!fit_tag(sp).is_null()).then_some(name)
+}
+
+/// Insert one code line, letter-spacing each wide run (CJK, emoji) to exactly
+/// 2 columns per char so diagrams keep their column grid where the mono font
+/// falls back. Plain segments keep the current tags and the runs stay in
+/// insertion order; with nothing to fit the line is inserted in one call,
+/// byte-identical to the pre-Phase-3 fast path.
+unsafe fn emit_code_line(line: &str, tags: &[String]) {
+    let mut fixes: Vec<(usize, usize, String)> = Vec::new(); // byte range -> fit tag
+    for (a, b) in crate::ansi::wide_runs(line) {
+        let run = &line[a..b];
+        // a wide run is suspect by construction; fit_run re-checks and skips
+        // anything it cannot measure
+        if let Some(name) = fit_run(run, 2.0 * run.chars().count() as f64 * col_px()) {
+            fixes.push((a, b, name));
+        }
+    }
+    if fixes.is_empty() {
+        insert_text(line, tags);
+        return;
+    }
+    let mut pos = 0usize;
+    for (a, b, name) in fixes {
+        insert_text(&line[pos..a], tags);
+        let mut rt = tags.to_vec();
+        rt.push(name);
+        insert_text(&line[a..b], &rt);
+        pos = b;
+    }
+    insert_text(&line[pos..], tags);
 }
 
 /// Insert spans; the first `lead` columns (list bullet, task box) and the
@@ -897,7 +1017,7 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                     if depth > 0 {
                         insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
                     }
-                    insert_text(cl, &t);
+                    emit_code_line(cl, &t);
                     insert_text("\n", &t);
                 }
             }
@@ -915,12 +1035,20 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                             }
                             TablePiece::Cell { spans, pad_l, pad_r, header } => {
                                 insert_text(&" ".repeat(pad_l), &["mono".into()]);
+                                // fit the whole cell (not the padding or frame)
+                                // to its nominal width so the `│` that follows
+                                // lands back on the column grid
+                                let plain = spans_plain(&spans);
+                                let fit = fit_run(&plain, spans_width(&spans) as f64 * col_px());
                                 for s in spans {
                                     let mut tags = vec!["mono".to_string()];
                                     if header {
                                         tags.push("bold".into());
                                     }
                                     tags.extend(style_tag_names(&s));
+                                    if let Some(f) = &fit {
+                                        tags.push(f.clone());
+                                    }
                                     insert_text(&s.text, &tags);
                                 }
                                 insert_text(&" ".repeat(pad_r), &["mono".into()]);
@@ -1248,6 +1376,13 @@ unsafe extern "C" fn act_quit(_: Ptr, _: Ptr, _: Ptr) {
     unsafe { (l().gtk_window_close)((*app()).win) }
 }
 
+// window destroy handler: (widget, user_data). Once the window is gone the
+// polling ticks must not touch the view or the disposed window any more;
+// nulling win is what their is_null guards check.
+unsafe extern "C" fn on_win_destroy(_: Ptr, _: Ptr) {
+    unsafe { (*app()).win = std::ptr::null_mut() }
+}
+
 // small-button handlers: (widget, user_data)
 
 unsafe extern "C" fn click_find_next(_: Ptr, _: Ptr) {
@@ -1321,6 +1456,7 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     }
     a.win = (l().adw_application_window_new)(a.app);
     (l().gtk_window_set_default_size)(a.win, 1100, 780);
+    connect(a.win, "destroy", cbptr::<unsafe extern "C" fn(Ptr, Ptr)>(on_win_destroy));
 
     let toolbar = (l().adw_toolbar_view_new)();
     let header = (l().adw_header_bar_new)();
@@ -1649,6 +1785,7 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         budget: 120,
         ptags: HashMap::new(),
         ctags: Vec::new(),
+        fit_tags: HashMap::new(),
         status_shown: false,
         find_shown: false,
     });
