@@ -1,8 +1,9 @@
-mdglass (0.1.0-6) unstable; urgency=medium
+mdglass (0.1.0-7) unstable; urgency=medium
 
-  * Documentation-only release: the packaged README now points at
-    examples/diagrams.md, the shipped demo of the vector diagrams.
-    The program itself is unchanged from 0.1.0-5.
+  * Diagram pictures follow the light/dark style: mermaid renders with
+    the matching palette (a #333333 canvas in dark mode) instead of a
+    baked-in light one, in-process and through the mmdr fallback alike;
+    a live style switch repaints the pictures.
 
- -- Rafal Okninski <hpn777@gmail.com>  Fri, 06 Nov 2026 15:00:58 +0000
+ -- Rafal Okninski <hpn777@gmail.com>  Fri, 06 Nov 2026 17:36:14 +0000
 
