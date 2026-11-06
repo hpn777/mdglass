@@ -36,6 +36,8 @@ cat notes.md | mdglass      # read from stdin
 In the terminal, press `/` to search, `n` for the next match, `]` `[` to switch files, and `q` to quit.
 In the window, use `Ctrl+F` to find, `Ctrl+O` to open, and `Ctrl++` / `Ctrl+-` to zoom.
 Prose wraps to the window; wide tables and diagrams keep their shape and scroll sideways.
+Those wraps are real line breaks, as in the terminal: find does not match a phrase split
+across two lines, copied text keeps the breaks, and resizing or zooming clears a selection.
 
 See `man mdglass` for all options.
 

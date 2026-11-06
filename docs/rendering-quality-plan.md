@@ -149,32 +149,45 @@ Unit tests for 1-4 in `doc.rs`/`ansi.rs` (`#[cfg(test)] mod tests`).
    `dlopen("libpango-1.0.so.0")`) and feed `col_px()` (replaces
    `MONO_ADVANCE`).
 4. **Viewport-aware table width**: budget = `(view_width - margins) /
-   col_px()`; connect `notify::width` on the view, re-render debounced
-   (~150 ms) **only when the column budget changes**, from a cached source
-   string (not re-read from disk); seed from `gtk_window_get_default_size()`
-   because the first `load_current()` runs before allocation. Zoom actions
-   re-render too (budget + margins + measurements change).
+   col_px()`, re-rendered from a cached source string (not re-read from
+   disk) **only when the column budget changes**. *As built:* a 200 ms poll
+   (`notify::width` never fired), and a new budget must hold on two ticks in
+   a row, so a drag-resize costs one render. The first load waits until the
+   view is allocated (rendering at the default size meant a second full
+   render a tick later). Zoom actions re-render immediately.
 5. **Theme-aware colors**: light/dark variants for `role-frame`, `role-faint`,
    link, backgrounds; query `adw_style_manager_get_dark()` at tag creation
    and update existing tags in place on `notify::dark`.
 
 ## Phase 2 — no-wrap islands: pre-wrapped prose, unwrapped grids/diagrams
 
-1. **Pixel-aware pre-wrap**: for each paragraph/heading/list item build the
-   plain text, wrap it with a `PangoLayout` (`gtk_widget_create_pango_layout`
-   → inherits the widget font incl. zoom CSS size; headings set an absolute
-   font size = base x heading scale; `pango_layout_set_width(budget px)` +
-   `pango_layout_set_wrap(WORD_CHAR)`); take `PangoLayoutLine.offset/length`
-   byte ranges (documented struct offsets 16/20; defended by an end-to-end
-   test) and emit `spans_slice` per visual line with the existing hanging-
-   indent tags. Bars for quotes are emitted per line (defect 5 done right).
+1. **Pixel-aware pre-wrap** (*as built*): each paragraph/heading/list item
+   body is wrapped by one reused `PangoLayout` from the view (its context:
+   family, font options) with an **explicit** size from the zoom (right
+   after a zoom the context still has the old CSS size), headings bold at
+   their scale, and the text given as **markup** so bold/italic/inline-code
+   spans are measured in their real faces (the parsed text is byte-identical
+   to the spans' plain text). Line starts come from
+   `pango_layout_line_get_start_index` (Pango >= 1.50, logical order even on
+   mixed-direction lines; the struct offsets 16/20 of the first design are
+   not ABI-stable). The width budget subtracts the quote bars and the list
+   indent, gutter and bullet. Each visual line is its own buffer paragraph,
+   so the tag's hanging indent never applies: continuation lines get the
+   bars plus `hanging` columns of mono padding; headings use `h{n}c` tags
+   without the gap above.
 2. **View switches to `WRAP_NONE`**, scrolled window horizontal policy
    `POLICY_AUTOMATIC`: code blocks and tables are inserted unwrapped — wide
    art scrolls horizontally intact; with nothing wide, no scrollbar appears.
    Code/table lines keep a no-wrap guarantee trivially (view-level NONE).
-3. **State preservation across re-renders** (resize, zoom, reload): cache the
-   source string; restore cursor offset and top line (save offset + first
-   visible iter before `set_text`, `scroll_to_iter` after).
+3. **State preservation across re-renders** (resize, zoom, reload of the
+   same file; *as built*): cursor and top line are saved as **anchors**
+   (block index + offset inside the block without the newline/bars/padding a
+   wrap adds), because a buffer offset or line number points at other text
+   once the paragraphs re-wrap. Restored through a mark with
+   `scroll_to_mark`, re-issued for a few frames (a single scroll right after
+   the rebuild lands short while GTK only has estimated line heights). An
+   open find bar re-highlights and stays on its match. Opening another file
+   starts at the top.
 4. Accepted consequences (documented in README/man): find matches words but
    not phrases spanning a wrap point; copy/paste contains the wrap's hard
    breaks (same semantics as the terminal back end); re-render on resize
@@ -214,7 +227,10 @@ outer border; interior `│` must land at exact cumulative columns):
   bottom border rows), a table with one CJK cell (all rows' right-edge x
   equal within ±1 px; valid whether CJK glyphs or tofu render), a diagram
   inside a blockquote (bar pixels at the lead column on every art line),
-  light+dark spot checks. Assertions settle after one debounce interval.
+  light+dark runs (`ADW_DEBUG_COLOR_SCHEME`). Added after the review:
+  nested-list continuation alignment, overflow checks for nested lists,
+  bold headings and right after a zoom, code shading and a drawn rule in a
+  quote, find highlight still on screen after a zoom.
 - `make check` stays green end to end.
 
 ## Order and effort
@@ -225,7 +241,7 @@ outer border; interior `│` must land at exact cumulative columns):
 | 1.1 | bars on all block types | gui.rs | low | S |
 | 1.2 | styled tables + arity | doc.rs, gui.rs | low | M |
 | 1.3 | mono pinning, scale drop, measured advance, pango dlopen | gui.rs | med | M |
-| 1.4 | viewport budget, notify::width, cached re-render | gui.rs | med | M |
+| 1.4 | viewport budget, polled + debounced, cached re-render | gui.rs | med | M |
 | 1.5 | theme-aware colors, notify::dark | gui.rs | low | S |
 | 2 | pre-wrap + WRAP_NONE + hscroll + state restore | doc.rs, gui.rs | med-high | L |
 | 3 | per-run letter-spacing fit | gui.rs | med | M |

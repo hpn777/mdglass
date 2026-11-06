@@ -41,10 +41,8 @@ const WRAP_NONE: c_int = 0; // GtkWrapMode NONE: the view never soft-wraps (Phas
 #[allow(dead_code)] // documents the enum; only AUTOMATIC is in use since Phase 2
 const POLICY_NEVER: c_int = 2; // kept: documents the other policy values
 const POLICY_AUTOMATIC: c_int = 1;
-/// PangoWrapMode WORD_CHAR. NOT the same number as GtkWrapMode's (3): Pango
-/// 1.56 renumbered the enum to WORD=0, CHAR=1, WORD_CHAR=2, NONE=3 (verified
-/// via introspection on the installed pango 1.57). Passing 3 here means
-/// WRAP_NONE on modern pango and silently disables pixel wrapping.
+/// PangoWrapMode WORD_CHAR. Not GtkWrapMode's WORD_CHAR (3): the two enums
+/// order their members differently, and 3 is PANGO_WRAP_NONE.
 const PANGO_WRAP_WORD_CHAR: c_int = 2;
 const PHASE_CAPTURED: c_int = 1;
 const NON_UNIQUE: c_uint = 16; // G_APPLICATION_NON_UNIQUE
@@ -105,7 +103,6 @@ struct Lib {
     gtk_text_view_set_right_margin: unsafe extern "C" fn(Ptr, c_int),
     gtk_text_view_set_top_margin: unsafe extern "C" fn(Ptr, c_int),
     gtk_text_view_set_bottom_margin: unsafe extern "C" fn(Ptr, c_int),
-    gtk_text_view_scroll_to_iter: unsafe extern "C" fn(Ptr, *mut TextIter, f64, c_int, f64, f64) -> c_int,
     gtk_text_buffer_create_tag: unsafe extern "C" fn(Ptr, *const c_char, *const c_char, ...) -> Ptr,
     gtk_text_buffer_set_text: unsafe extern "C" fn(Ptr, *const c_char, c_int),
     gtk_text_buffer_get_end_iter: unsafe extern "C" fn(Ptr, *mut TextIter),
@@ -113,9 +110,11 @@ struct Lib {
     gtk_text_buffer_get_insert: unsafe extern "C" fn(Ptr) -> Ptr,
     gtk_text_buffer_get_iter_at_mark: unsafe extern "C" fn(Ptr, *mut TextIter, Ptr),
     gtk_text_buffer_get_iter_at_offset: unsafe extern "C" fn(Ptr, *mut TextIter, c_int),
-    gtk_text_buffer_get_iter_at_line: unsafe extern "C" fn(Ptr, *mut TextIter, c_int),
     gtk_text_view_get_visible_rect: unsafe extern "C" fn(Ptr, *mut c_int),
-    gtk_text_view_get_line_at_y: unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int) -> Ptr,
+    gtk_text_view_get_line_at_y: unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int),
+    gtk_text_view_scroll_to_mark: unsafe extern "C" fn(Ptr, Ptr, f64, c_int, f64, f64),
+    gtk_text_buffer_create_mark: unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, c_int) -> Ptr,
+    gtk_text_buffer_move_mark: unsafe extern "C" fn(Ptr, Ptr, *const TextIter),
     gtk_text_buffer_insert: unsafe extern "C" fn(Ptr, *mut TextIter, *const c_char, c_int),
     gtk_text_buffer_insert_with_tags_by_name:
         unsafe extern "C" fn(Ptr, *mut TextIter, *const c_char, c_int, *const c_char, ...),
@@ -129,7 +128,6 @@ struct Lib {
         unsafe extern "C" fn(*const TextIter, *const c_char, c_uint, *mut TextIter, *mut TextIter, *const TextIter) -> c_int,
     gtk_text_iter_compare: unsafe extern "C" fn(*const TextIter, *const TextIter) -> c_int,
     gtk_text_iter_get_offset: unsafe extern "C" fn(*const TextIter) -> c_int,
-    gtk_text_iter_get_line: unsafe extern "C" fn(*const TextIter) -> c_int,
     gtk_box_new: unsafe extern "C" fn(c_int, c_int) -> Ptr,
     gtk_box_append: unsafe extern "C" fn(Ptr, Ptr),
     gtk_button_new_from_icon_name: unsafe extern "C" fn(*const c_char) -> Ptr,
@@ -181,16 +179,17 @@ struct Lib {
     pango_layout_get_size: unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int),
     pango_layout_set_width: unsafe extern "C" fn(Ptr, c_int),
     pango_layout_set_wrap: unsafe extern "C" fn(Ptr, c_int),
+    pango_layout_set_markup: unsafe extern "C" fn(Ptr, *const c_char, c_int),
     pango_layout_get_line_count: unsafe extern "C" fn(Ptr) -> c_int,
     pango_layout_get_line_readonly: unsafe extern "C" fn(Ptr, c_int) -> Ptr,
-    pango_layout_index_to_line_x: unsafe extern "C" fn(Ptr, c_int, c_int, *mut c_int, *mut c_int),
+    pango_layout_line_get_start_index: unsafe extern "C" fn(Ptr) -> c_int,
     pango_layout_get_context: unsafe extern "C" fn(Ptr) -> Ptr,
-    pango_layout_get_font_description: unsafe extern "C" fn(Ptr) -> Ptr,
     pango_context_get_font_description: unsafe extern "C" fn(Ptr) -> Ptr,
     pango_font_description_copy: unsafe extern "C" fn(Ptr) -> Ptr,
     pango_layout_set_font_description: unsafe extern "C" fn(Ptr, Ptr),
     pango_font_description_from_string: unsafe extern "C" fn(*const c_char) -> Ptr,
     pango_font_description_set_absolute_size: unsafe extern "C" fn(Ptr, f64),
+    pango_font_description_set_weight: unsafe extern "C" fn(Ptr, c_int),
     pango_font_description_free: unsafe extern "C" fn(Ptr),
     g_object_set: unsafe extern "C" fn(Ptr, *const c_char, ...),
     g_object_unref: unsafe extern "C" fn(Ptr),
@@ -267,7 +266,6 @@ fn load_lib() -> Result<Lib, String> {
             gtk_text_view_set_right_margin: gs!("gtk_text_view_set_right_margin", unsafe extern "C" fn(Ptr, c_int)),
             gtk_text_view_set_top_margin: gs!("gtk_text_view_set_top_margin", unsafe extern "C" fn(Ptr, c_int)),
             gtk_text_view_set_bottom_margin: gs!("gtk_text_view_set_bottom_margin", unsafe extern "C" fn(Ptr, c_int)),
-            gtk_text_view_scroll_to_iter: gs!("gtk_text_view_scroll_to_iter", unsafe extern "C" fn(Ptr, *mut TextIter, f64, c_int, f64, f64) -> c_int),
             gtk_text_buffer_create_tag: gs!("gtk_text_buffer_create_tag", unsafe extern "C" fn(Ptr, *const c_char, *const c_char, ...) -> Ptr),
             gtk_text_buffer_set_text: gs!("gtk_text_buffer_set_text", unsafe extern "C" fn(Ptr, *const c_char, c_int)),
             gtk_text_buffer_get_end_iter: gs!("gtk_text_buffer_get_end_iter", unsafe extern "C" fn(Ptr, *mut TextIter)),
@@ -275,9 +273,11 @@ fn load_lib() -> Result<Lib, String> {
             gtk_text_buffer_get_insert: gs!("gtk_text_buffer_get_insert", unsafe extern "C" fn(Ptr) -> Ptr),
             gtk_text_buffer_get_iter_at_mark: gs!("gtk_text_buffer_get_iter_at_mark", unsafe extern "C" fn(Ptr, *mut TextIter, Ptr)),
             gtk_text_buffer_get_iter_at_offset: gs!("gtk_text_buffer_get_iter_at_offset", unsafe extern "C" fn(Ptr, *mut TextIter, c_int)),
-            gtk_text_buffer_get_iter_at_line: gs!("gtk_text_buffer_get_iter_at_line", unsafe extern "C" fn(Ptr, *mut TextIter, c_int)),
             gtk_text_view_get_visible_rect: gs!("gtk_text_view_get_visible_rect", unsafe extern "C" fn(Ptr, *mut c_int)),
-            gtk_text_view_get_line_at_y: gs!("gtk_text_view_get_line_at_y", unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int) -> Ptr),
+            gtk_text_view_get_line_at_y: gs!("gtk_text_view_get_line_at_y", unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int)),
+            gtk_text_view_scroll_to_mark: gs!("gtk_text_view_scroll_to_mark", unsafe extern "C" fn(Ptr, Ptr, f64, c_int, f64, f64)),
+            gtk_text_buffer_create_mark: gs!("gtk_text_buffer_create_mark", unsafe extern "C" fn(Ptr, *const c_char, *const TextIter, c_int) -> Ptr),
+            gtk_text_buffer_move_mark: gs!("gtk_text_buffer_move_mark", unsafe extern "C" fn(Ptr, Ptr, *const TextIter)),
             gtk_text_buffer_insert: gs!("gtk_text_buffer_insert", unsafe extern "C" fn(Ptr, *mut TextIter, *const c_char, c_int)),
             gtk_text_buffer_insert_with_tags_by_name: gs!("gtk_text_buffer_insert_with_tags_by_name", unsafe extern "C" fn(Ptr, *mut TextIter, *const c_char, c_int, *const c_char, ...)),
             gtk_text_buffer_place_cursor: gs!("gtk_text_buffer_place_cursor", unsafe extern "C" fn(Ptr, *const TextIter)),
@@ -287,7 +287,6 @@ fn load_lib() -> Result<Lib, String> {
             gtk_text_iter_forward_search: gs!("gtk_text_iter_forward_search", unsafe extern "C" fn(*const TextIter, *const c_char, c_uint, *mut TextIter, *mut TextIter, *const TextIter) -> c_int),
             gtk_text_iter_compare: gs!("gtk_text_iter_compare", unsafe extern "C" fn(*const TextIter, *const TextIter) -> c_int),
             gtk_text_iter_get_offset: gs!("gtk_text_iter_get_offset", unsafe extern "C" fn(*const TextIter) -> c_int),
-            gtk_text_iter_get_line: gs!("gtk_text_iter_get_line", unsafe extern "C" fn(*const TextIter) -> c_int),
             gtk_box_new: gs!("gtk_box_new", unsafe extern "C" fn(c_int, c_int) -> Ptr),
             gtk_box_append: gs!("gtk_box_append", unsafe extern "C" fn(Ptr, Ptr)),
             gtk_button_new_from_icon_name: gs!("gtk_button_new_from_icon_name", unsafe extern "C" fn(*const c_char) -> Ptr),
@@ -338,16 +337,17 @@ fn load_lib() -> Result<Lib, String> {
             pango_layout_get_size: gs!(pango "pango_layout_get_size", unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int)),
             pango_layout_set_width: gs!(pango "pango_layout_set_width", unsafe extern "C" fn(Ptr, c_int)),
             pango_layout_set_wrap: gs!(pango "pango_layout_set_wrap", unsafe extern "C" fn(Ptr, c_int)),
+            pango_layout_set_markup: gs!(pango "pango_layout_set_markup", unsafe extern "C" fn(Ptr, *const c_char, c_int)),
             pango_layout_get_line_count: gs!(pango "pango_layout_get_line_count", unsafe extern "C" fn(Ptr) -> c_int),
             pango_layout_get_line_readonly: gs!(pango "pango_layout_get_line_readonly", unsafe extern "C" fn(Ptr, c_int) -> Ptr),
-            pango_layout_index_to_line_x: gs!(pango "pango_layout_index_to_line_x", unsafe extern "C" fn(Ptr, c_int, c_int, *mut c_int, *mut c_int)),
+            pango_layout_line_get_start_index: gs!(pango "pango_layout_line_get_start_index", unsafe extern "C" fn(Ptr) -> c_int),
             pango_layout_get_context: gs!(pango "pango_layout_get_context", unsafe extern "C" fn(Ptr) -> Ptr),
-            pango_layout_get_font_description: gs!(pango "pango_layout_get_font_description", unsafe extern "C" fn(Ptr) -> Ptr),
             pango_context_get_font_description: gs!(pango "pango_context_get_font_description", unsafe extern "C" fn(Ptr) -> Ptr),
             pango_font_description_copy: gs!(pango "pango_font_description_copy", unsafe extern "C" fn(Ptr) -> Ptr),
             pango_layout_set_font_description: gs!(pango "pango_layout_set_font_description", unsafe extern "C" fn(Ptr, Ptr)),
             pango_font_description_from_string: gs!(pango "pango_font_description_from_string", unsafe extern "C" fn(*const c_char) -> Ptr),
             pango_font_description_set_absolute_size: gs!(pango "pango_font_description_set_absolute_size", unsafe extern "C" fn(Ptr, f64)),
+            pango_font_description_set_weight: gs!(pango "pango_font_description_set_weight", unsafe extern "C" fn(Ptr, c_int)),
             pango_font_description_free: gs!(pango "pango_font_description_free", unsafe extern "C" fn(Ptr)),
             g_object_set: gs!(go "g_object_set", unsafe extern "C" fn(Ptr, *const c_char, ...)),
             g_object_unref: gs!(go "g_object_unref", unsafe extern "C" fn(Ptr)),
@@ -420,6 +420,25 @@ struct App {
     ctags: Vec<(Ptr, &'static str, &'static str)>,
     /// per-run letter-spacing tags by spacing value in Pango units (fit_tag)
     fit_tags: HashMap<i64, Ptr>,
+    /// chars inserted so far by the current render (buffer offsets are chars)
+    emit_off: i32,
+    /// buffer offset where each emitted block starts, in emission order, and
+    /// the (offset, len) runs that exist only because a paragraph was wrapped
+    /// (newline, bars and hanging pad of continuation lines): together they
+    /// map view positions to anchors that survive a re-wrap (to_anchor)
+    block_starts: Vec<i32>,
+    synth: Vec<(i32, i32)>,
+    /// where the top visible line goes back to after a re-render
+    top_mark: Ptr,
+    /// reused PangoLayout for wrap_spans_px (font and width are set per call)
+    wlayout: Ptr,
+    /// a scroll to re-issue for a few frames after a re-render (see scroll_settled):
+    /// (mark, within_margin, use_align, yalign) and how many more times
+    rescroll: Option<(Ptr, f64, c_int, f64)>,
+    rescroll_left: u8,
+    /// resize debounce: a new column budget must be seen on two ticks in a row
+    seen_cols: usize,
+    seen_count: u8,
     status_shown: bool,
     find_shown: bool,
 }
@@ -520,6 +539,11 @@ unsafe fn make_tags() {
         set_f(t, "scale", HEAD_SCALES[lvl]);
         set_i(t, "pixels-above-lines", above[lvl]);
         set_i(t, "pixels-below-lines", 2);
+        // continuation lines of a pre-wrapped heading: same face, no gap above
+        let t = tag(&format!("h{lvl}c"));
+        set_i(t, "weight", WEIGHT_BOLD);
+        set_f(t, "scale", HEAD_SCALES[lvl]);
+        set_i(t, "pixels-below-lines", 2);
     }
     set_i(tag("bold"), "weight", WEIGHT_BOLD);
     set_i(tag("italic"), "style", STYLE_ITALIC);
@@ -554,9 +578,9 @@ unsafe fn make_tags() {
     let t = tag("mono");
     set_s(t, "family", MONO_FAMILY);
 
+    // rules are drawn as a line of `─` (see emit): GTK paints no paragraph
+    // background on an empty line, so the old shaded-band rule never showed
     let t = tag("rule");
-    set_s(t, "paragraph-background", "rgba(127,127,127,0.28)");
-    set_i(t, "paragraph-background-set", 1);
     set_i(t, "pixels-above-lines", 8);
     set_i(t, "pixels-below-lines", 8);
 
@@ -583,21 +607,15 @@ unsafe extern "C" fn on_dark_changed(_: Ptr, _: Ptr, _: Ptr) {
 }
 
 /// Measure the real pixel width of one monospace column at the current zoom:
-/// Pango lays out 200 `0` glyphs under the same explicit font description the
-/// CSS zoom size implies (Pango units are 1/1024 px, unrounded). Called from
-/// apply_css so margins and budgets follow every zoom change.
+/// 200 `0` glyphs laid out exactly like mono text renders (mono_run_px: the
+/// pinned family list, the zoom size, unrounded Pango units). Called from
+/// apply_css so margins and budgets follow every zoom change; a failed
+/// measurement keeps the previous value (col_px falls back before the first).
 unsafe fn measure_mono() {
-    let text = cstr(&"0".repeat(200));
-    let layout = (l().gtk_widget_create_pango_layout)((*app()).view, std::ptr::null());
-    let desc = (l().pango_font_description_from_string)(c"DejaVu Sans Mono".as_ptr());
-    (l().pango_font_description_set_absolute_size)(desc, BASE_FONT_PX * (*app()).zoom * 1024.0);
-    (l().pango_layout_set_font_description)(layout, desc);
-    (l().pango_layout_set_text)(layout, text.as_ptr(), text.as_bytes().len() as c_int);
-    let (mut w, mut h) = (0 as c_int, 0 as c_int);
-    (l().pango_layout_get_size)(layout, &mut w, &mut h);
-    (*app()).mono_px = w as f64 / 200.0 / 1024.0;
-    (l().pango_font_description_free)(desc);
-    (l().g_object_unref)(layout);
+    let w = mono_run_px(&"0".repeat(200), false);
+    if w.is_finite() && w > 0.0 {
+        (*app()).mono_px = w / 200.0;
+    }
 }
 
 /// Measure `text` as it renders: a PangoLayout from the view (same context
@@ -605,7 +623,7 @@ unsafe fn measure_mono() {
 /// CSS zoom size implies. Width in pixels, unrounded (`get_size` returns Pango
 /// units, 1/1024 px; `get_pixel_size` would round). NaN on any failure —
 /// callers treat NaN as "skip fitting", never panic.
-unsafe fn mono_run_px(text: &str) -> f64 {
+unsafe fn mono_run_px(text: &str, bold: bool) -> f64 {
     let view = (*app()).view;
     if view.is_null() {
         return f64::NAN;
@@ -621,6 +639,9 @@ unsafe fn mono_run_px(text: &str) -> f64 {
         return f64::NAN;
     }
     (l().pango_font_description_set_absolute_size)(desc, BASE_FONT_PX * (*app()).zoom * 1024.0);
+    if bold {
+        (l().pango_font_description_set_weight)(desc, WEIGHT_BOLD); // header cells render bold
+    }
     (l().pango_layout_set_font_description)(layout, desc);
     (l().pango_layout_set_text)(layout, text.as_ptr() as *const c_char, text.len() as c_int);
     let (mut w, mut h) = (0 as c_int, 0 as c_int);
@@ -656,8 +677,7 @@ unsafe fn set_margins(t: Ptr, depth: usize, indent: usize, hanging: usize, code:
         set_i(t, "indent", 0);
     } else {
         // top-level list markers sit in a fixed two-column gutter
-        let gutter = if depth == 0 && hanging > 0 { 2 } else { 0 };
-        set_i(t, "left-margin", cols(indent + gutter));
+        set_i(t, "left-margin", cols(indent + para_gutter(depth, hanging)));
         set_i(t, "indent", -cols(depth * 2 + hanging));
     }
 }
@@ -698,6 +718,7 @@ unsafe fn insert_text(text: &str, tags: &[String]) {
         return;
     }
     let a = &mut *app();
+    a.emit_off += text.chars().count() as c_int;
     let mut it = TextIter::default();
     (l().gtk_text_buffer_get_end_iter)(a.buffer, &mut it);
     let t = cstr(text);
@@ -705,28 +726,21 @@ unsafe fn insert_text(text: &str, tags: &[String]) {
         (l().gtk_text_buffer_insert)(a.buffer, &mut it, t.as_ptr(), text.len() as c_int);
         return;
     }
-    // pad to a fixed number of names: "base" repeats are harmless
+    // a fixed-arity call, NULL right after the real names: GTK stops reading
+    // there, so unused slots cost nothing (padding with a dummy tag made GTK
+    // apply it once per slot, measurably slowing big documents)
     debug_assert!(tags.len() <= 10);
-    let mut names: Vec<CString> = tags.iter().map(|s| cstr(s)).collect();
-    while names.len() < 10 {
-        names.push(cstr("base"));
+    let names: Vec<CString> = tags.iter().take(10).map(|s| cstr(s)).collect();
+    let mut p = [std::ptr::null::<c_char>(); 11];
+    for (slot, n) in p.iter_mut().zip(&names) {
+        *slot = n.as_ptr();
     }
     (l().gtk_text_buffer_insert_with_tags_by_name)(
         a.buffer,
         &mut it,
         t.as_ptr(),
         t.as_bytes().len() as c_int,
-        names[0].as_ptr(),
-        names[1].as_ptr(),
-        names[2].as_ptr(),
-        names[3].as_ptr(),
-        names[4].as_ptr(),
-        names[5].as_ptr(),
-        names[6].as_ptr(),
-        names[7].as_ptr(),
-        names[8].as_ptr(),
-        names[9].as_ptr(),
-        std::ptr::null::<c_char>(),
+        p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10],
     );
 }
 
@@ -776,23 +790,30 @@ fn suspect(text: &str) -> bool {
         .any(|c| char_width(c) == 2 || (c >= '\u{2000}' && !('\u{2500}'..='\u{257F}').contains(&c)))
 }
 
+/// Letter-spacing (Pango units, 1/1024 px) that stretches `text`, measured at
+/// `measured` px, onto exactly `target` px; None when the gap is under 1 px
+/// (layout rounding, not drift) or nothing could be spaced. Pango adds the
+/// spacing per cluster, so zero-width chars (combining marks, joiners,
+/// variation selectors) do not count as slots.
+fn fit_spacing(text: &str, target: f64, measured: f64) -> Option<i64> {
+    let delta = target - measured;
+    let slots = text.chars().filter(|&c| char_width(c) > 0).count();
+    if !measured.is_finite() || delta.abs() < 1.0 || slots == 0 {
+        return None;
+    }
+    Some((delta * 1024.0 / slots as f64).round() as i64)
+}
+
 /// The cached letter-spacing tag name that forces `text` to occupy exactly
 /// `target` px, or None when no fitting happens: empty or non-suspect text,
-/// a failed measurement, |delta| < 1 px (layout rounding, not drift), or a
-/// tag that could not be created. Callers then behave exactly as before.
-unsafe fn fit_run(text: &str, target: f64) -> Option<String> {
+/// a failed measurement, a sub-pixel gap, or a tag that could not be
+/// created. Callers then behave exactly as before. `bold` measures the way a
+/// table header renders.
+unsafe fn fit_run(text: &str, target: f64, bold: bool) -> Option<String> {
     if text.is_empty() || !suspect(text) {
         return None;
     }
-    let measured = mono_run_px(text);
-    if !measured.is_finite() {
-        return None;
-    }
-    let delta = target - measured;
-    if delta.abs() < 1.0 {
-        return None;
-    }
-    let sp = (delta * 1024.0 / text.chars().count() as f64).round() as i64;
+    let sp = fit_spacing(text, target, mono_run_px(text, bold))?;
     let name = fit_name(sp);
     (!fit_tag(sp).is_null()).then_some(name)
 }
@@ -808,7 +829,7 @@ unsafe fn emit_code_line(line: &str, tags: &[String]) {
         let run = &line[a..b];
         // a wide run is suspect by construction; fit_run re-checks and skips
         // anything it cannot measure
-        if let Some(name) = fit_run(run, 2.0 * run.chars().count() as f64 * col_px()) {
+        if let Some(name) = fit_run(run, 2.0 * run.chars().count() as f64 * col_px(), false) {
             fixes.push((a, b, name));
         }
     }
@@ -848,122 +869,185 @@ unsafe fn emit_spans(spans: &[Span], base: &[String], depth: usize, lead: usize)
     }
 }
 
-/// Pre-wrap a paragraph/heading into visual lines that fit `width_px` pixels.
-/// Body text renders in the proportional UI font, so column counts are
-/// meaningless: a PangoLayout created from the view inherits its CSS font
-/// (family and zoom-scaled size) and word-wraps the plain text; each visual
-/// line becomes one fragment. Headings render at `font_scale` x the CSS size,
-/// so the layout font gets that absolute size. On any failure (null layout or
-/// line, offsets off a char boundary, no lines) the paragraph comes back as a
-/// single unwrapped fragment — the view no longer wraps, so it would overflow
-/// under the hscrollbar; never panic.
-unsafe fn wrap_spans_px(spans: &[Span], width_px: i32, font_scale: f64) -> Vec<Vec<Span>> {
-    let unwrapped = || vec![spans.to_vec()];
-    let view = (*app()).view;
-    if view.is_null() || width_px <= 0 {
-        return unwrapped();
-    }
-    let layout = (l().gtk_widget_create_pango_layout)(view, std::ptr::null());
-    if layout.is_null() {
-        return unwrapped();
-    }
-    if font_scale != 1.0 {
-        // NULL from get_font_description means "use the context font"
-        let mut desc = (l().pango_layout_get_font_description)(layout);
-        if desc.is_null() {
-            let ctx = (l().pango_layout_get_context)(layout);
-            if !ctx.is_null() {
-                desc = (l().pango_context_get_font_description)(ctx);
+/// Pango markup that measures `spans` the way they render: bold and italic
+/// spans and inline code (pinned mono family) have their own glyph widths,
+/// so wrapping the plain text would let those lines overflow. The parsed
+/// text is byte-identical to `spans_plain(spans)`, so Pango's line start
+/// indices map straight back onto the spans. Control chars (1 byte, which
+/// GMarkup may reject) are measured as spaces of the same byte length.
+fn measure_markup(spans: &[Span]) -> String {
+    let mut m = String::new();
+    for s in spans {
+        let mut attrs = String::new();
+        if s.style.contains(Style::BOLD) {
+            attrs.push_str(" font_weight=\"bold\"");
+        }
+        if s.style.contains(Style::ITALIC) {
+            attrs.push_str(" font_style=\"italic\"");
+        }
+        if s.role == Role::Code {
+            attrs.push_str(&format!(" font_family=\"{MONO_FAMILY}\""));
+        }
+        if !attrs.is_empty() {
+            m.push_str(&format!("<span{attrs}>"));
+        }
+        for c in s.text.chars() {
+            match c {
+                '&' => m.push_str("&amp;"),
+                '<' => m.push_str("&lt;"),
+                '>' => m.push_str("&gt;"),
+                c if (c as u32) < 0x20 || c == '\u{7f}' => m.push(' '),
+                c => m.push(c),
             }
         }
-        if !desc.is_null() {
-            let copy = (l().pango_font_description_copy)(desc);
-            if !copy.is_null() {
-                // Pango units are 1/1024 px, like the CSS size the view uses
-                (l().pango_font_description_set_absolute_size)(
-                    copy,
-                    BASE_FONT_PX * (*app()).zoom * font_scale * 1024.0,
-                );
-                (l().pango_layout_set_font_description)(layout, copy);
-                (l().pango_font_description_free)(copy);
-            }
+        if !attrs.is_empty() {
+            m.push_str("</span>");
         }
     }
+    m
+}
+
+/// Cut `spans` at Pango line start byte offsets. None when the offsets are
+/// not usable (not starting at 0, not increasing, past the end, or off a
+/// char boundary), so the caller falls back to one unwrapped line.
+fn cut_lines(spans: &[Span], starts: &[usize]) -> Option<Vec<Vec<Span>>> {
     let text = spans_plain(spans);
-    (l().pango_layout_set_text)(layout, text.as_ptr() as *const c_char, text.len() as c_int);
-    (l().pango_layout_set_width)(layout, width_px * 1024); // PANGO_SCALE
-    (l().pango_layout_set_wrap)(layout, PANGO_WRAP_WORD_CHAR);
-    let mut frags: Vec<Vec<Span>> = Vec::new();
-    let count = (l().pango_layout_get_line_count)(layout);
-    // Visual-line byte ranges: the original design read PangoLayoutLine's
-    // offset/length at struct bytes 16/20 (layout* 0, runs* 8). That ABI died
-    // with Pango >= 1.44: the struct now holds a `s` access pointer at byte 16
-    // and offset/length are 30-bit packed fields, so 16/20 reads pointer
-    // garbage — exactly what tests/gui_smoke.py + the Broadway fixtures
-    // detected on pango 1.57 (the fallback below fired, no crash). Derive the
-    // same ranges from the public API instead: line k starts at the lowest
-    // byte index whose line number is k (monotonic, binary-searchable).
-    let line_at = |b: usize| -> c_int {
-        let (mut line, mut x) = (0 as c_int, 0 as c_int);
-        unsafe { (l().pango_layout_index_to_line_x)(layout, b as c_int, 0, &mut line, &mut x) };
-        line
-    };
-    let mut ok = count >= 1;
-    let mut starts: Vec<usize> = Vec::new();
-    if ok {
-        starts.push(0usize);
-        for k in 1..count {
-            if (l().pango_layout_get_line_readonly)(layout, k).is_null() {
-                ok = false;
-                break;
-            }
-            let (mut lo, mut hi) = (starts[k as usize - 1], text.len());
-            while lo < hi {
-                let mid = lo + (hi - lo) / 2;
-                if line_at(mid) >= k {
-                    hi = mid;
-                } else {
-                    lo = mid + 1;
-                }
-            }
-            starts.push(lo);
-        }
+    if starts.first() != Some(&0) {
+        return None;
     }
-    if ok {
-        for k in 0..starts.len() {
-            let a = starts[k];
-            let b = if k + 1 < starts.len() { starts[k + 1] } else { text.len() };
-            if !text.is_char_boundary(a) || !text.is_char_boundary(b) {
-                ok = false; // never slice invalid UTF-8
-                break;
-            }
+    let mut frags = Vec::new();
+    for (k, &a) in starts.iter().enumerate() {
+        let b = starts.get(k + 1).copied().unwrap_or(text.len());
+        if b < a || b > text.len() || !text.is_char_boundary(a) || !text.is_char_boundary(b) {
+            return None;
+        }
+        if b > a || k == 0 {
             frags.push(spans_slice(spans, a, b));
         }
     }
-    (l().g_object_unref)(layout);
-    if !ok || frags.is_empty() {
+    Some(frags)
+}
+
+/// Pre-wrap a paragraph or heading into visual lines that fit `width_px`.
+/// Body text renders in the proportional UI font, so column counts are
+/// meaningless: Pango wraps it with the view's own context (family, font
+/// options) at the size the view will render at. The size is always set
+/// explicitly from the zoom: right after a zoom the context still carries the
+/// old CSS size until the next frame. Heading lines render bold at
+/// `font_scale`. On any failure the paragraph comes back as one unwrapped
+/// line (it then overflows under the horizontal scrollbar); never panics.
+unsafe fn wrap_spans_px(spans: &[Span], width_px: i32, font_scale: f64, bold: bool) -> Vec<Vec<Span>> {
+    let unwrapped = || vec![spans.to_vec()];
+    let a = &mut *app();
+    if a.view.is_null() || width_px <= 0 || spans.is_empty() {
         return unwrapped();
     }
-    frags
+    if a.wlayout.is_null() {
+        a.wlayout = (l().gtk_widget_create_pango_layout)(a.view, std::ptr::null());
+    }
+    let layout = a.wlayout;
+    if layout.is_null() {
+        return unwrapped();
+    }
+    let ctx = (l().pango_layout_get_context)(layout);
+    let base = if ctx.is_null() { std::ptr::null_mut() } else { (l().pango_context_get_font_description)(ctx) };
+    let desc = if base.is_null() {
+        (l().pango_font_description_from_string)(c"Sans".as_ptr())
+    } else {
+        (l().pango_font_description_copy)(base)
+    };
+    if desc.is_null() {
+        return unwrapped();
+    }
+    (l().pango_font_description_set_absolute_size)(desc, BASE_FONT_PX * a.zoom * font_scale * 1024.0);
+    if bold {
+        (l().pango_font_description_set_weight)(desc, WEIGHT_BOLD);
+    }
+    (l().pango_layout_set_font_description)(layout, desc);
+    (l().pango_font_description_free)(desc);
+
+    let markup = measure_markup(spans);
+    (l().pango_layout_set_markup)(layout, markup.as_ptr() as *const c_char, markup.len() as c_int);
+    (l().pango_layout_set_width)(layout, width_px.saturating_mul(1024)); // PANGO_SCALE
+    (l().pango_layout_set_wrap)(layout, PANGO_WRAP_WORD_CHAR);
+    // logical start byte of every visual line (Pango >= 1.50); the layout
+    // line struct itself is not ABI-stable, so no field is read directly
+    let mut starts: Vec<usize> = Vec::new();
+    for k in 0..(l().pango_layout_get_line_count)(layout) {
+        let line = (l().pango_layout_get_line_readonly)(layout, k);
+        if line.is_null() {
+            return unwrapped();
+        }
+        starts.push((l().pango_layout_line_get_start_index)(line).max(0) as usize);
+    }
+    cut_lines(spans, &starts).filter(|f| !f.is_empty()).unwrap_or_else(unwrapped)
 }
 
-/// Pixel width available to pre-wrapped prose at this quote depth: the
-/// column budget minus the quote bars (2 columns per depth) and one column
-/// of slack against pixel rounding, so GTK never overflows the viewport and
-/// no spurious horizontal scrollbar appears for prose-only documents.
-unsafe fn wrap_px(depth: usize) -> i32 {
-    let cols = (*app()).budget.saturating_sub(1 + depth * 2);
-    ((cols as f64) * col_px()).max(0.0) as i32
+/// Columns left of a paragraph's text: the margin tag's indent plus the
+/// fixed two-column gutter top-level list markers sit in.
+fn para_gutter(depth: usize, hanging: usize) -> usize {
+    if depth == 0 && hanging > 0 {
+        2
+    } else {
+        0
+    }
 }
 
-/// One visual line of a pre-wrapped paragraph: skip Pango's empty trailing
-/// fragment when other lines exist (the last text line already carries it).
-fn is_droppable(frag: &[Span], total: usize) -> bool {
-    total > 1 && spans_plain(frag).trim().is_empty()
+/// Pixel width available to pre-wrapped text whose line starts `left` mono
+/// columns in (list indent, gutter, bullet) at this quote depth: the column
+/// budget minus the quote bars, `left`, and one column of slack against
+/// rounding, so prose never reaches the horizontal scrollbar. Never narrower
+/// than 8 columns: at absurd widths a little overflow beats one word a line.
+unsafe fn wrap_px(depth: usize, left: usize) -> i32 {
+    let cols = (*app()).budget.saturating_sub(1 + depth * 2 + left).max(8);
+    (cols as f64 * col_px()) as i32
+}
+
+/// Split a list item's spans into its lead (the bullet and task box: the
+/// whole spans covering the first `lead` columns, exactly the ones emit_spans
+/// sets in mono) and the body text that wraps.
+fn split_lead(spans: &[Span], lead: usize) -> (Vec<Span>, Vec<Span>) {
+    let (mut col, mut i) = (0usize, 0usize);
+    while i < spans.len() && col < lead {
+        col += spans[i].text.chars().count();
+        i += 1;
+    }
+    (spans[..i].to_vec(), spans[i..].to_vec())
+}
+
+/// Emit pre-wrapped lines. The first carries the quote bars and the lead
+/// (bullet); every continuation is its own buffer paragraph, so the tag's
+/// hanging indent never applies to it: it gets the bars plus `hanging`
+/// columns of mono padding instead, which puts its text under the first
+/// line's text. That newline, bars and padding exist only because of the
+/// wrap and are recorded as synthetic runs for view-state anchors.
+unsafe fn emit_wrapped(frags: &[Vec<Span>], lead: &[Span], first: &[String], cont: &[String], depth: usize, hanging: usize) {
+    let n = frags.len();
+    for (k, frag) in frags.iter().enumerate() {
+        if k == 0 {
+            let mut line = lead.to_vec();
+            line.extend(frag.iter().cloned());
+            emit_spans(&line, first, depth, hanging);
+            continue;
+        }
+        if k == n - 1 && spans_plain(frag).trim().is_empty() {
+            continue; // an empty trailing visual line
+        }
+        let s = (*app()).emit_off;
+        insert_text("\n", cont);
+        let pad = Span { text: " ".repeat(hanging), style: Style::empty(), role: Role::None, url: None };
+        emit_spans(&[pad], cont, depth, hanging);
+        let e = (*app()).emit_off;
+        (*app()).synth.push((s, e - s));
+        emit_spans(frag, cont, 0, 0);
+    }
+    insert_text("\n", if n > 1 { cont } else { first });
 }
 
 unsafe fn emit(lines: &[Line], depth: usize) {
     for line in lines {
+        let a = &mut *app();
+        a.block_starts.push(a.emit_off);
         match line {
             Line::Blank => {
                 if depth > 0 {
@@ -972,50 +1056,51 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                 insert_text("\n", &[]);
             }
             Line::Rule => {
+                // a faint mono line across the text width, like the terminal;
+                // the bar run carries `rule` too, since a paragraph's spacing
+                // comes from the tags on its first char
                 if depth > 0 {
-                    insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
+                    insert_text(&bar_text(depth), &["rule".into(), "lead".into(), "role-bar".into()]);
                 }
+                let n = (*app()).budget.saturating_sub(1 + depth * 2).max(3);
+                insert_text(&"─".repeat(n), &["rule".into(), "lead".into(), "role-frame".into()]);
                 insert_text("\n", &["rule".to_string()]);
             }
             Line::Heading { lvl, spans } => {
                 let lvl = (*lvl).clamp(1, 6);
                 let mut t = vec![format!("h{lvl}")];
+                let mut c = vec![format!("h{lvl}c")];
                 if let Some(p) = ensure_para_tag(depth, 0, 0) {
-                    t.push(p);
+                    t.push(p.clone());
+                    c.push(p);
                 }
-                // Pre-wrapped here: the view is WRAP_NONE, so each Pango line
-                // becomes its own buffer line; every fragment carries the same
-                // tags, and emit_spans bars quote depths on each of them.
-                let frags = wrap_spans_px(spans, wrap_px(depth), HEAD_SCALES[lvl]);
-                for frag in frags.iter() {
-                    if is_droppable(frag, frags.len()) {
-                        continue;
-                    }
-                    emit_spans(frag, &t, depth, 0);
-                    insert_text("\n", &t);
-                }
+                // pre-wrapped: the view is WRAP_NONE, so each Pango line is
+                // its own buffer line; continuations skip the gap above
+                let frags = wrap_spans_px(spans, wrap_px(depth, 0), HEAD_SCALES[lvl], true);
+                emit_wrapped(&frags, &[], &t, &c, depth, 0);
             }
             Line::Para { spans, indent, hanging } => {
                 let mut t = Vec::new();
                 if let Some(p) = ensure_para_tag(depth, *indent, *hanging) {
                     t.push(p);
                 }
-                let frags = wrap_spans_px(spans, wrap_px(depth), 1.0);
-                for (k, frag) in frags.iter().enumerate() {
-                    if is_droppable(frag, frags.len()) {
-                        continue;
-                    }
-                    // the bullet hanging belongs to the first visual line
-                    // only; the rest reuse the same margin tag
-                    emit_spans(frag, &t, depth, if k == 0 { *hanging } else { 0 });
-                    insert_text("\n", &t);
-                }
+                // only the body wraps; the bullet stays on the first line and
+                // the continuations are padded to the body's column
+                let (lead, body) = split_lead(spans, *hanging);
+                let left = indent + para_gutter(depth, *hanging) + hanging;
+                let frags = wrap_spans_px(&body, wrap_px(depth, left), 1.0, false);
+                emit_wrapped(&frags, &lead, &t, &t, depth, *hanging);
             }
             Line::Code { lines, .. } => {
                 let t = vec![ensure_cb(depth)];
                 for cl in lines {
                     if depth > 0 {
-                        insert_text(&bar_text(depth), &["lead".into(), "role-bar".into()]);
+                        // the block tag rides on the bar: paragraph shading
+                        // comes from the tags on a line's first char
+                        let mut bt = t.clone();
+                        bt.push("lead".into());
+                        bt.push("role-bar".into());
+                        insert_text(&bar_text(depth), &bt);
                     }
                     emit_code_line(cl, &t);
                     insert_text("\n", &t);
@@ -1039,7 +1124,7 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                                 // to its nominal width so the `│` that follows
                                 // lands back on the column grid
                                 let plain = spans_plain(&spans);
-                                let fit = fit_run(&plain, spans_width(&spans) as f64 * col_px());
+                                let fit = fit_run(&plain, spans_width(&spans) as f64 * col_px(), header);
                                 for s in spans {
                                     let mut tags = vec!["mono".to_string()];
                                     if header {
@@ -1070,57 +1155,130 @@ unsafe fn current_path() -> Option<String> {
     a.files.get(a.idx).cloned()
 }
 
+/// A view position that survives a re-render at another width: the block it
+/// lies in (blocks are emitted in the same order at any width) and the
+/// offset inside that block, not counting synthetic chars (the newline, bars
+/// and padding a wrap adds). Offsets are buffer chars.
+fn to_anchor(p: i32, blocks: &[i32], synth: &[(i32, i32)]) -> (usize, i32) {
+    if blocks.is_empty() {
+        return (0, p.max(0));
+    }
+    let k = blocks.partition_point(|&s| s <= p).saturating_sub(1);
+    let start = blocks[k];
+    let mut off = p - start;
+    for &(s, len) in synth.iter().filter(|r| r.0 >= start && r.0 < p) {
+        off -= len.min(p - s); // inside a synthetic run: its start
+    }
+    (k, off.max(0))
+}
+
+/// Inverse of to_anchor against a new render's blocks and synthetic runs,
+/// clamped to the block (its text may have shrunk, e.g. a narrower table).
+fn from_anchor(anchor: (usize, i32), blocks: &[i32], synth: &[(i32, i32)], end: i32) -> i32 {
+    let (k, off) = anchor;
+    let Some(&start) = blocks.get(k) else { return end };
+    let stop = blocks.get(k + 1).copied().unwrap_or(end).min(end);
+    let (mut phys, mut left) = (start, off);
+    for &(s, len) in synth.iter().filter(|r| r.0 >= start && r.0 < stop) {
+        let real = s - phys; // real chars before this synthetic run
+        if left < real {
+            break;
+        }
+        left -= real;
+        phys = s + len;
+    }
+    (phys + left).clamp(0, stop.max(start))
+}
+
+/// Scroll `mark` into view now, and again on the next few frames. Right after
+/// the buffer is rebuilt GTK only has estimated heights for the new lines,
+/// so a single scroll lands short (measured: paragraph 21 instead of 200 in a
+/// 300-paragraph document); repeating it while lines are validated converges
+/// on the real position. Idempotent once it is right.
+unsafe fn scroll_settled(mark: Ptr, within: f64, use_align: c_int, yalign: f64) {
+    let a = &mut *app();
+    if mark.is_null() || a.view.is_null() {
+        return;
+    }
+    (l().gtk_text_view_scroll_to_mark)(a.view, mark, within, use_align, 0.0, yalign);
+    let idle = a.rescroll.is_none();
+    a.rescroll = Some((mark, within, use_align, yalign));
+    a.rescroll_left = 6;
+    if idle {
+        (l().g_timeout_add)(60, Some(on_rescroll), std::ptr::null_mut());
+    }
+}
+
+unsafe extern "C" fn on_rescroll(_data: Ptr) -> c_int {
+    unsafe {
+        let a = &mut *app();
+        match a.rescroll {
+            Some((mark, within, use_align, yalign)) if a.rescroll_left > 0 && !a.win.is_null() => {
+                a.rescroll_left -= 1;
+                (l().gtk_text_view_scroll_to_mark)(a.view, mark, within, use_align, 0.0, yalign);
+                1
+            }
+            _ => {
+                a.rescroll = None;
+                0
+            }
+        }
+    }
+}
+
 /// Parse `src` with a `cols`-column budget and render it into the buffer.
-/// Every re-render (resize, zoom, disk reload) rebuilds the whole buffer, so
-/// the cursor offset and the top visible line are saved before the clear and
-/// restored (clamped to the new buffer) afterwards.
-unsafe fn render_source(src: &str, cols: usize) {
+/// With `keep` (resize, zoom, reload of the same document) the cursor and the
+/// top visible line come back as anchors, so they land on the same text
+/// however it re-wrapped, and an open find bar re-highlights its match.
+/// Without (another document) the view starts at the top.
+unsafe fn render_source(src: &str, cols: usize, keep: bool) {
     let cfg = Cfg::new(false, cols, true);
     let parsed = parse(src, &cfg);
     let a = &mut *app();
-
-    // --- view state before the buffer is cleared (silently skipped when the
-    // view is null or not allocated yet, e.g. the initial load) ---
-    let mut cur_off = -1 as c_int;
-    let mut top_line = -1 as c_int;
-    if !a.buffer.is_null() && !a.view.is_null() {
-        let mark = (l().gtk_text_buffer_get_insert)(a.buffer);
-        if !mark.is_null() {
-            let mut it = TextIter::default();
-            (l().gtk_text_buffer_get_iter_at_mark)(a.buffer, &mut it, mark);
-            cur_off = (l().gtk_text_iter_get_offset)(&it);
-        }
-        // GdkRectangle: four c_ints (x, y, width, height)
-        let mut rect = [0 as c_int; 4];
+    let mut saved: Option<((usize, i32), (usize, i32))> = None; // (cursor, top line)
+    if keep && !a.buffer.is_null() && !a.view.is_null() && !a.block_starts.is_empty() {
+        let mut it = TextIter::default();
+        (l().gtk_text_buffer_get_iter_at_mark)(a.buffer, &mut it, (l().gtk_text_buffer_get_insert)(a.buffer));
+        let cur = (l().gtk_text_iter_get_offset)(&it);
+        let mut rect = [0 as c_int; 4]; // GdkRectangle: x, y, width, height
         (l().gtk_text_view_get_visible_rect)(a.view, rect.as_mut_ptr());
+        let mut top = 0;
         if rect[3] > 0 {
-            let mut it = TextIter::default();
-            // the PangoLayoutLine* return and the line-top out-param are not
-            // needed; a null return still fills the iter
-            (l().gtk_text_view_get_line_at_y)(a.view, &mut it, rect[1], std::ptr::null_mut());
-            top_line = (l().gtk_text_iter_get_line)(&it);
+            let mut line_top = 0 as c_int;
+            (l().gtk_text_view_get_line_at_y)(a.view, &mut it, rect[1], &mut line_top);
+            top = (l().gtk_text_iter_get_offset)(&it);
         }
+        saved = Some((to_anchor(cur, &a.block_starts, &a.synth), to_anchor(top, &a.block_starts, &a.synth)));
     }
 
     (l().gtk_text_buffer_set_text)(a.buffer, c"".as_ptr(), 0);
+    a.emit_off = 0;
+    a.block_starts.clear();
+    a.synth.clear();
     emit(&parsed, 0);
 
-    // --- put the cursor and the top line back, clamped to the new buffer ---
-    if cur_off > 0 || top_line > 0 {
-        let mut end = TextIter::default();
-        (l().gtk_text_buffer_get_end_iter)(a.buffer, &mut end);
-        if cur_off > 0 {
-            let end_off = (l().gtk_text_iter_get_offset)(&end);
-            let mut it = TextIter::default();
-            (l().gtk_text_buffer_get_iter_at_offset)(a.buffer, &mut it, cur_off.min(end_off));
-            (l().gtk_text_buffer_place_cursor)(a.buffer, &it);
-        }
-        if top_line > 0 {
-            let last = (l().gtk_text_iter_get_line)(&end);
-            let mut it = TextIter::default();
-            (l().gtk_text_buffer_get_iter_at_line)(a.buffer, &mut it, top_line.min(last));
-            (l().gtk_text_view_scroll_to_iter)(a.view, &mut it, 0.0, 0, 0.0, 0.0);
-        }
+    let a = &mut *app();
+    let mut it = TextIter::default();
+    (l().gtk_text_buffer_get_end_iter)(a.buffer, &mut it);
+    let end = (l().gtk_text_iter_get_offset)(&it);
+    let (cur, top) = match saved {
+        Some((c, t)) => (
+            from_anchor(c, &a.block_starts, &a.synth, end),
+            from_anchor(t, &a.block_starts, &a.synth, end),
+        ),
+        None => (0, 0),
+    };
+    (l().gtk_text_buffer_get_iter_at_offset)(a.buffer, &mut it, cur);
+    (l().gtk_text_buffer_place_cursor)(a.buffer, &it);
+    (l().gtk_text_buffer_get_iter_at_offset)(a.buffer, &mut it, top);
+    if a.top_mark.is_null() {
+        a.top_mark = (l().gtk_text_buffer_create_mark)(a.buffer, c"mdglass-top".as_ptr(), &it, 1);
+    } else {
+        (l().gtk_text_buffer_move_mark)(a.buffer, a.top_mark, &it);
+    }
+    scroll_settled(a.top_mark, 0.0, 1, 0.0);
+    if keep && a.find_shown {
+        do_search(false, false, true); // re-highlight, stay on the same match
     }
 }
 
@@ -1128,9 +1286,8 @@ unsafe fn render_source(src: &str, cols: usize) {
 unsafe fn view_cols() -> usize {
     let a = &*app();
     let mut w = (l().gtk_widget_get_width)(a.view);
-    if w < 300 {
-        // not allocated yet (first load runs before the window is realized):
-        // fall back to the window's configured default width
+    if w <= 1 {
+        // not allocated yet: fall back to the window's configured default width
         let (mut dw, mut dh) = (0 as c_int, 0 as c_int);
         (l().gtk_window_get_default_size)(a.win, &mut dw, &mut dh);
         w = dw;
@@ -1146,10 +1303,12 @@ unsafe fn relayout_cached() {
     let cols = view_cols();
     let Some(src) = (*app()).src_cache.clone() else { return };
     (*app()).budget = cols;
-    render_source(&src, cols);
+    render_source(&src, cols, true);
 }
 
-unsafe fn load_current() {
+/// Read and render the current document; `keep` preserves the view state
+/// (a reload of the same file), otherwise it starts at the top.
+unsafe fn load_current(keep: bool) {
     let src = match &(*app()).content {
         Some(c) => c.clone(),
         None => match current_path() {
@@ -1163,7 +1322,7 @@ unsafe fn load_current() {
     let cols = view_cols();
     (*app()).src_cache = Some(src.clone());
     (*app()).budget = cols;
-    render_source(&src, cols);
+    render_source(&src, cols, keep);
 
     let shown = match &(*app()).content {
         Some(_) => "(stdin)".to_string(),
@@ -1201,7 +1360,10 @@ unsafe fn clear_hits() {
     (l().gtk_text_buffer_remove_tag_by_name)(a.buffer, n.as_ptr(), &s, &e);
 }
 
-unsafe fn do_search(from_top: bool, backward: bool) {
+/// Highlight every match and move to one: the first (`from_top`), the next
+/// or previous one from the cursor, or with `keep` the match the cursor is
+/// on (after a re-render the cursor comes back to the same match's end).
+unsafe fn do_search(from_top: bool, backward: bool, keep: bool) {
     let a = &*app();
     let needle = CStr::from_ptr((l().gtk_editable_get_text)(a.entry)).to_string_lossy().into_owned();
     clear_hits();
@@ -1236,20 +1398,20 @@ unsafe fn do_search(from_top: bool, backward: bool) {
         if pick.is_none() {
             if backward {
                 pick = hits.iter().rposition(|h| (l().gtk_text_iter_compare)(&h.0, &cursor) < 0);
-                if pick.is_none() {
-                    pick = Some(hits.len() - 1);
-                }
+            } else if keep {
+                pick = hits.iter().position(|h| (l().gtk_text_iter_compare)(&h.1, &cursor) >= 0);
             } else {
                 pick = hits.iter().position(|h| (l().gtk_text_iter_compare)(&h.0, &cursor) >= 0);
-                if pick.is_none() {
-                    pick = Some(0);
-                }
+            }
+            if pick.is_none() {
+                pick = Some(if backward { hits.len() - 1 } else { 0 });
             }
         }
         let k = pick.unwrap_or(0);
-        let mut target = hits[k].1;
         (l().gtk_text_buffer_place_cursor)(a.buffer, &hits[k].1);
-        (l().gtk_text_view_scroll_to_iter)(a.view, &mut target, 0.3, 0, 0.0, 0.5);
+        // via the insert mark and scroll_settled: right after a re-render the
+        // new lines only have estimated heights
+        scroll_settled((l().gtk_text_buffer_get_insert)(a.buffer), 0.3, 0, 0.5);
         format!("{} of {}", k + 1, hits.len())
     };
     let lc = cstr(&label);
@@ -1297,7 +1459,7 @@ unsafe fn select_file(delta: isize) {
     }
     let n = a.files.len() as isize;
     a.idx = (((a.idx as isize + delta) % n + n) % n) as usize;
-    load_current();
+    load_current(false);
 }
 
 unsafe extern "C" fn act_open(_action: Ptr, _param: Ptr, _data: Ptr) {
@@ -1329,7 +1491,7 @@ unsafe extern "C" fn on_dialog_done(source: Ptr, result: Ptr, _data: Ptr) {
         a.idx = a.files.len() - 1;
     }
     a.content = None;
-    load_current();
+    load_current(false);
 }
 
 unsafe extern "C" fn act_find(_: Ptr, _: Ptr, _: Ptr) {
@@ -1337,7 +1499,7 @@ unsafe extern "C" fn act_find(_: Ptr, _: Ptr, _: Ptr) {
 }
 
 unsafe extern "C" fn act_reload(_: Ptr, _: Ptr, _: Ptr) {
-    unsafe { load_current() }
+    unsafe { load_current(true) }
 }
 
 unsafe extern "C" fn act_zoom_in(_: Ptr, _: Ptr, _: Ptr) {
@@ -1386,11 +1548,11 @@ unsafe extern "C" fn on_win_destroy(_: Ptr, _: Ptr) {
 // small-button handlers: (widget, user_data)
 
 unsafe extern "C" fn click_find_next(_: Ptr, _: Ptr) {
-    unsafe { do_search(false, false) }
+    unsafe { do_search(false, false, false) }
 }
 
 unsafe extern "C" fn click_find_prev(_: Ptr, _: Ptr) {
-    unsafe { do_search(false, true) }
+    unsafe { do_search(false, true, false) }
 }
 
 unsafe extern "C" fn click_find_close(_: Ptr, _: Ptr) {
@@ -1398,11 +1560,11 @@ unsafe extern "C" fn click_find_close(_: Ptr, _: Ptr) {
 }
 
 unsafe extern "C" fn entry_changed(_: Ptr, _: Ptr) {
-    unsafe { do_search(true, false) }
+    unsafe { do_search(true, false, false) }
 }
 
 unsafe extern "C" fn entry_activate(_: Ptr, _: Ptr) {
-    unsafe { do_search(false, false) }
+    unsafe { do_search(false, false, false) }
 }
 
 // key-pressed handler: (controller, keyval, keycode, state, user_data).
@@ -1418,17 +1580,52 @@ unsafe extern "C" fn key_press(_ctrl: Ptr, keyval: c_uint, _code: c_uint, _state
     0
 }
 
-// A resize is picked up by polling in on_relayout_tick: GtkWidget's
-// notify::width proved unreliable here (never fired for the initial 0 -> w
-// allocation), and one FFI width read per tick is as cheap as the mtime poll.
+// A resize is picked up by polling: GtkWidget's notify::width never fired
+// here (not even for the first allocation), and one width read per tick is
+// as cheap as the mtime poll. A new budget must hold for two ticks in a row
+// before the (full) re-render, so a drag-resize costs one render, not one
+// per tick.
 unsafe extern "C" fn on_relayout_tick(_data: Ptr) -> c_int {
     unsafe {
-        let a = &*app();
-        if !a.status_shown && !a.win.is_null() && view_cols() != a.budget {
+        let a = &mut *app();
+        if a.status_shown || a.win.is_null() || a.src_cache.is_none() {
+            return 1;
+        }
+        let c = view_cols();
+        if c == a.budget {
+            a.seen_count = 0;
+            return 1;
+        }
+        if c == a.seen_cols {
+            a.seen_count += 1;
+        } else {
+            (a.seen_cols, a.seen_count) = (c, 1);
+        }
+        if a.seen_count >= 2 {
+            a.seen_count = 0;
             relayout_cached();
         }
     }
     1
+}
+
+static mut FIRST_LOAD_TRIES: u32 = 0;
+
+// First document load, deferred until the view is allocated (~1.5 s at most,
+// then the default-size estimate is used).
+unsafe extern "C" fn on_first_load(_data: Ptr) -> c_int {
+    unsafe {
+        let a = &*app();
+        if a.win.is_null() {
+            return 0;
+        }
+        FIRST_LOAD_TRIES += 1;
+        if (l().gtk_widget_get_width)(a.view) <= 1 && FIRST_LOAD_TRIES < 50 {
+            return 1;
+        }
+        load_current(false);
+    }
+    0
 }
 
 unsafe extern "C" fn on_tick(_data: Ptr) -> c_int {
@@ -1439,7 +1636,7 @@ unsafe extern "C" fn on_tick(_data: Ptr) -> c_int {
                 if let Ok(t) = std::fs::metadata(&p).map(|m| m.modified()) {
                     if let Ok(t) = t {
                         if a.mtime.is_some() && a.mtime != Some(t) {
-                            load_current();
+                            load_current(true);
                         }
                     }
                 }
@@ -1519,7 +1716,9 @@ unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
         a.status_shown = true;
     } else {
         a.status_shown = false;
-        load_current();
+        // render once the view has its real width: rendering now, at the
+        // default size, would mean a second full render a tick later
+        (l().g_timeout_add)(30, Some(on_first_load), std::ptr::null_mut());
     }
     (l().gtk_window_present)(a.win);
     (l().g_timeout_add_seconds)(2, Some(on_tick), std::ptr::null_mut());
@@ -1786,6 +1985,15 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         ptags: HashMap::new(),
         ctags: Vec::new(),
         fit_tags: HashMap::new(),
+        emit_off: 0,
+        block_starts: Vec::new(),
+        synth: Vec::new(),
+        top_mark: std::ptr::null_mut(),
+        wlayout: std::ptr::null_mut(),
+        rescroll: None,
+        rescroll_left: 0,
+        seen_cols: 0,
+        seen_count: 0,
         status_shown: false,
         find_shown: false,
     });
@@ -1798,5 +2006,126 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         } else {
             Err(format!("GUI exited with status {rc}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sp(text: &str, style: Style, role: Role) -> Span {
+        Span { text: text.to_string(), style, role, url: None }
+    }
+
+    /// markup text with the tags removed and entities decoded, as Pango parses it
+    fn markup_text(m: &str) -> String {
+        let mut out = String::new();
+        let mut in_tag = false;
+        for c in m.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' => in_tag = false,
+                c if !in_tag => out.push(c),
+                _ => {}
+            }
+        }
+        out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    }
+
+    #[test]
+    fn anchors_survive_a_rewrap() {
+        // render A: block 0 = "aaaa bbbb" wrapped once (synthetic "\n" + 2 pad
+        // chars at offset 5), block 1 = "cc\n"
+        // A text: "aaaa " "\n  " "bbbb" "\n" | "cc\n"
+        let (blocks_a, synth_a) = (vec![0, 13], vec![(5, 3)]);
+        // render B (wider): no wrap, "aaaa bbbb\n" | "cc\n"
+        let (blocks_b, synth_b) = (vec![0, 10], vec![]);
+        // the 'b' at A offset 9 (logical 6 in block 0) is at B offset 6
+        let an = to_anchor(9, &blocks_a, &synth_a);
+        assert_eq!(an, (0, 6));
+        assert_eq!(from_anchor(an, &blocks_b, &synth_b, 13), 6);
+        // and back to A
+        assert_eq!(from_anchor(to_anchor(6, &blocks_b, &synth_b), &blocks_a, &synth_a, 16), 9);
+        // a position inside a synthetic run maps to its start
+        assert_eq!(to_anchor(6, &blocks_a, &synth_a), (0, 5));
+        // the second block keeps its offset whatever happened before it
+        assert_eq!(from_anchor(to_anchor(14, &blocks_a, &synth_a), &blocks_b, &synth_b, 13), 11);
+    }
+
+    #[test]
+    fn anchors_clamp_to_shrunken_blocks_and_the_end() {
+        assert_eq!(from_anchor((0, 50), &[0, 10], &[], 20), 10);
+        assert_eq!(from_anchor((5, 0), &[0, 10], &[], 20), 20);
+        assert_eq!(to_anchor(7, &[], &[]), (0, 7));
+    }
+
+    #[test]
+    fn fit_spacing_math() {
+        // 4 wide glyphs 8 px short: 2 px = 2048 units per glyph
+        assert_eq!(fit_spacing("漢字漢字", 40.0, 32.0), Some(2048));
+        // too wide: negative spacing
+        assert_eq!(fit_spacing("漢字", 20.0, 24.0), Some(-2048));
+        // sub-pixel gaps and failed measurements are left alone
+        assert_eq!(fit_spacing("漢字", 20.0, 19.5), None);
+        assert_eq!(fit_spacing("漢字", 20.0, f64::NAN), None);
+        // zero-width chars are not spacing slots
+        assert_eq!(fit_spacing("漢\u{301}", 20.0, 18.0), Some(2048));
+        assert_eq!(fit_spacing("\u{301}", 20.0, 10.0), None);
+    }
+
+    #[test]
+    fn suspect_runs() {
+        assert!(!suspect("plain ASCII │ ─ ┼ кириллица"));
+        assert!(suspect("漢"));
+        assert!(suspect("✅"));
+        assert!(suspect("a → b")); // U+2192: not DejaVu-exact by assumption
+    }
+
+    #[test]
+    fn markup_parses_back_to_the_plain_text() {
+        let spans = vec![
+            sp("a < b & c > d ", Style::empty(), Role::None),
+            sp("bold", Style::BOLD, Role::None),
+            sp(" x\u{7}y ", Style::ITALIC, Role::None),
+            sp("code", Style::empty(), Role::Code),
+        ];
+        let m = measure_markup(&spans);
+        assert!(m.contains("font_weight=\"bold\"") && m.contains("font_style=\"italic\""));
+        assert!(m.contains(MONO_FAMILY));
+        let plain = spans_plain(&spans).replace('\u{7}', " ");
+        assert_eq!(markup_text(&m), plain);
+        assert_eq!(markup_text(&m).len(), spans_plain(&spans).len()); // same byte offsets
+    }
+
+    #[test]
+    fn cut_lines_maps_starts_onto_spans() {
+        let spans = vec![sp("hello ", Style::BOLD, Role::None), sp("wide world", Style::empty(), Role::None)];
+        let f = cut_lines(&spans, &[0, 11]).unwrap();
+        assert_eq!(f.len(), 2);
+        assert_eq!(spans_plain(&f[0]), "hello wide ");
+        assert_eq!(spans_plain(&f[1]), "world");
+        assert_eq!(f[0][0].style, Style::BOLD);
+        // unusable offsets: not from 0, decreasing, past the end, mid-char
+        assert!(cut_lines(&spans, &[3]).is_none());
+        assert!(cut_lines(&spans, &[0, 8, 4]).is_none());
+        assert!(cut_lines(&spans, &[0, 99]).is_none());
+        assert!(cut_lines(&[sp("漢字", Style::empty(), Role::None)], &[0, 1]).is_none());
+        // a repeated start yields no empty fragment
+        assert_eq!(cut_lines(&spans, &[0, 11, 11]).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn split_lead_takes_whole_bullet_spans() {
+        let spans = vec![
+            sp("•", Style::empty(), Role::Bullet),
+            sp(" ", Style::empty(), Role::None),
+            sp("☐ ", Style::empty(), Role::Todo),
+            sp("text", Style::empty(), Role::None),
+        ];
+        let (lead, body) = split_lead(&spans, 4);
+        assert_eq!(spans_plain(&lead), "• ☐ ");
+        assert_eq!(spans_plain(&body), "text");
+        let (lead, body) = split_lead(&spans, 0);
+        assert!(lead.is_empty() && body.len() == 4);
     }
 }

@@ -3,3 +3,4 @@
 /dist
 /.flatpak-builder
 /repo
+__pycache__/
