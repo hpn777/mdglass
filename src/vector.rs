@@ -307,6 +307,48 @@ mod tests {
     }
 
     #[test]
+    fn shipped_example_renders_as_designed() {
+        // examples/diagrams.md is the demo people run and screenshot; if the
+        // gate or an engine changes shape, the file must fail this, not rot
+        let doc = include_str!("../examples/diagrams.md");
+        let mut fences: Vec<(String, String)> = Vec::new();
+        let mut open: Option<(String, String)> = None;
+        for line in doc.lines() {
+            if line.starts_with("```") {
+                match open.take() {
+                    None => open = Some((line[3..].trim().to_string(), String::new())),
+                    Some(f) => fences.push(f),
+                }
+            } else if let Some((_, body)) = open.as_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        assert!(open.is_none(), "balanced fences");
+        assert_eq!(fences.len(), 6, "six fenced blocks in the example");
+        for (i, lang) in [("", ""), ("text", "text")].iter().take(0) {
+            let _ = (i, lang); // (kept simple below)
+        }
+        // box art and unicode art vectorize, themed for either style
+        for i in 0..2 {
+            assert_eq!(fences[i].0, ["", "text"][i], "block {i} info string");
+            let raw = engine_svg(&fences[i].0, &fences[i].1).unwrap_or_else(|| panic!("art block {i} must render"));
+            assert!(raw.contains("<path"), "block {i} has vector paths");
+            for dark in [true, false] {
+                assert!(apply_theme(&fences[i].0, &raw, dark).is_some(), "block {i} themes");
+            }
+        }
+        // the three mermaid diagrams parse with the built-in engine
+        for i in 2..5 {
+            assert_eq!(fences[i].0, "mermaid", "block {i} info string");
+            assert!(engine_svg("mermaid", &fences[i].1).is_some(), "mermaid block {i} must render");
+        }
+        // the grid table is the deliberate rejection: it stays searchable text
+        assert_eq!(fences[5].0, "");
+        assert!(engine_svg("", &fences[5].1).is_none(), "the data table must stay text");
+    }
+
+    #[test]
     fn mermaid_lang_match() {
         assert!(is_mermaid("mermaid"));
         assert!(is_mermaid(" Mermaid "));
