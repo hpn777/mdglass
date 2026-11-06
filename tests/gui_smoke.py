@@ -69,17 +69,6 @@ def longest_run(xs):
             best_len, best_end = cur, b
     return best_len, best_end
 
-def run_from(xs, x0):
-    """end x of the consecutive run that starts at x0 (0 if x0 not lit)"""
-    if not xs or xs[0] != x0:
-        return 0
-    end = x0
-    for a, b in zip(xs, xs[1:]):
-        if b != a + 1:
-            break
-        end = b
-    return end
-
 def border_rows(img, min_run, y0=56):
     """rows holding a horizontal lit run longer than min_run, grouped into
     consecutive-y segments: [(first_y, last_y, run_start, run_end), ...]"""
@@ -132,8 +121,11 @@ def boxes_check(wide_path, narrow_path):
     segs = border_rows(img, 380)
     if not segs:
         return False, "wide box: no border row (run > 380 px) found at all"
-    t0, t1, tl, _ = segs[0]
-    end = run_from(lit_xs(img, t1, 4, img.w), tl)
+    t0, t1, _, _ = segs[0]
+    # the longest lit run on the border row, not the run from the segment's
+    # leftmost x: the text caret (offset 0, x=28) sits left of the corner
+    n, end = longest_run(lit_xs(img, t1, 4, img.w))
+    tl = end - n + 1
     wide_ok = end >= img.w - 3
     img2 = pngread.open(narrow_path)
     segs2 = border_rows(img2, 380)
@@ -361,6 +353,8 @@ fn main() {}
 > two
 > three
 > ```
+> 
+> ---
 > 
 > | x | y |
 > |---|---|
