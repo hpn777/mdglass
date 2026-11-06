@@ -418,6 +418,46 @@ fn main() {}
     quality("code shading and rule inside a quote", quote_blocks_check, p("r_quote.png"))
     quality("find match still highlighted on screen after a zoom", hit_check, p("r_find.png"))
 
+    # diagrams: box art and mermaid rendered as vector pictures inside the
+    # text view (child anchors), then re-emitted: the anchor lifetime bug
+    # (gtktextchild assertion on the second render) died on exactly this
+    open(p("dgr.md"), "w").write(
+        "# Diagrams\n\n"
+        "```\n+--------+      +--------+\n| Client |----->| Server |\n"
+        "+--------+      +--------+\n```\n\n"
+        "```text\n╭───────╮   ╭───────╮\n│ Cache │<==│  DB   │\n╰───────╯   ╰───────╯\n```\n\n"
+        "```mermaid\nflowchart LR\n  A[Read config] --> B{valid?}\n"
+        "  B -->|yes| C[(Database)]\n  B -->|no| E[Exit 1]\n```\n\n"
+        "```rust\nfn main() {\n    let x = a --> b; // typed blocks stay text\n}\n```\n\n"
+        "```\n+================+     +----------+\n|   Long name    |---->| Pipeline |\n"
+        "+================+     +----------+\n```\n")
+    rc, err = run([p("dgr.md")], ";".join([f"shot:{p('dgr1.png')}", "action:reload",
+                   f"shot:{p('dgr2.png')}", "action:zoom-in", f"shot:{p('dgr3.png')}", "quit"]),
+                   scheme="prefer-dark", timeout=60)
+    check("diagram session exits cleanly", rc == 0, f"exit {rc}\n{err[-600:]}")
+    check("diagram session has no GTK warnings", not gtk_noise(err),
+          "\n     ".join(gtk_noise(err)[:5]))
+
+    def dgr_check(path):
+        img = pngread.open(path)
+        best = 0
+        for y in range(56, img.h):
+            xs = lit_xs(img, y, 20, img.w - 16)
+            if xs:
+                best = max(best, longest_run(xs)[0])
+        # the mermaid canvas (white on the dark page) cannot come from text:
+        # a text-only build of the same document sampled ~1000
+        whites = sum(1 for y in range(56, img.h, 2) for x in range(20, img.w - 16, 2)
+                     if all(c > 235 for c in img.rgb(x, y)[:3]))
+        # aasvg and mermaid rules are single solid strokes; the longest run
+        # of adjacent text pixels in the same document was 99 (box glyphs)
+        ok = best >= 400 and whites >= 8000
+        return ok, f"longest vector rule {best}px, mermaid canvas pixels {whites}"
+
+    quality("code blocks became vector pictures (solid rules, mermaid canvas)", dgr_check, p("dgr1.png"))
+    quality("pictures survive a full re-render of the document", dgr_check, p("dgr2.png"))
+    quality("pictures stay vector after zooming", dgr_check, p("dgr3.png"))
+
     live = p("live.md")
     open(live, "w").write("# one\n")
     def edit():

@@ -4,6 +4,7 @@ mod ansi;
 mod doc;
 mod gui;
 mod pager;
+mod vector;
 mod render;
 
 use std::io::{self, Read, Write};

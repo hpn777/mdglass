@@ -12,6 +12,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::ansi::char_width;
+use crate::vector;
 use crate::doc::{parse, spans_plain, spans_slice, spans_width, table_pieces, Cfg, Line, Role, Span, Style, TablePiece};
 
 // ------------------------------------------------------------------ FFI ---
@@ -113,6 +114,22 @@ struct Lib {
     gtk_text_view_get_visible_rect: unsafe extern "C" fn(Ptr, *mut c_int),
     gtk_text_view_get_line_at_y: unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int),
     gtk_text_view_scroll_to_mark: unsafe extern "C" fn(Ptr, Ptr, f64, c_int, f64, f64),
+    gtk_text_buffer_create_child_anchor: unsafe extern "C" fn(Ptr, *const TextIter) -> Ptr,
+    gtk_text_view_add_child_at_anchor: unsafe extern "C" fn(Ptr, Ptr, Ptr),
+    gtk_picture_new: unsafe extern "C" fn() -> Ptr,
+    gtk_picture_set_paintable: unsafe extern "C" fn(Ptr, Ptr),
+    gdk_memory_texture_new: unsafe extern "C" fn(c_int, c_int, c_int, Ptr, usize) -> Ptr,
+    g_bytes_new_with_free_func: unsafe extern "C" fn(Ptr, usize, Option<unsafe extern "C" fn(Ptr)>, Ptr) -> Ptr,
+    gdk_pixbuf_loader_new_with_type: unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr,
+    gdk_pixbuf_loader_write: unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int,
+    gdk_pixbuf_loader_close: unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int,
+    gdk_pixbuf_loader_get_pixbuf: unsafe extern "C" fn(Ptr) -> Ptr,
+    gdk_pixbuf_get_width: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_height: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_scale_simple: unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr,
+    gdk_pixbuf_get_pixels: unsafe extern "C" fn(Ptr) -> Ptr,
+    gdk_pixbuf_get_rowstride: unsafe extern "C" fn(Ptr) -> c_int,
+    g_bytes_unref: unsafe extern "C" fn(Ptr),
     gtk_text_view_get_iter_location: unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int),
     gtk_scrolled_window_get_hadjustment: unsafe extern "C" fn(Ptr) -> Ptr,
     gtk_scrolled_window_get_vadjustment: unsafe extern "C" fn(Ptr) -> Ptr,
@@ -200,6 +217,7 @@ struct Lib {
     pango_font_description_free: unsafe extern "C" fn(Ptr),
     g_object_set: unsafe extern "C" fn(Ptr, *const c_char, ...),
     g_object_unref: unsafe extern "C" fn(Ptr),
+    g_object_ref: unsafe extern "C" fn(Ptr) -> Ptr,
     g_object_ref_sink: unsafe extern "C" fn(Ptr) -> Ptr,
     gtk_widget_paintable_new: unsafe extern "C" fn(Ptr) -> Ptr,
     gtk_snapshot_new: unsafe extern "C" fn() -> Ptr,
@@ -234,6 +252,10 @@ fn load_lib() -> Result<Lib, String> {
         let gio = expect(dlopen(c"libgio-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libgio-2.0")?;
         let glib = expect(dlopen(c"libglib-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libglib-2.0")?;
         let pango = expect(dlopen(c"libpango-1.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libpango-1.0")?;
+        // diagram pictures; gdk-pixbuf is a hard GTK4 dependency, the SVG
+        // loader inside it (librsvg) is the only soft one: without it the
+        // loader simply fails and blocks stay code
+        let pixbuf = expect(dlopen(c"libgdk_pixbuf-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libgdk_pixbuf-2.0")?;
         let mut missing: Vec<String> = Vec::new();
         macro_rules! g {
             ($h:expr, $n:literal, $t:ty) => {
@@ -250,6 +272,7 @@ fn load_lib() -> Result<Lib, String> {
             (gio $n:literal, $t:ty) => { g!(gio, $n, $t) };
             (glib $n:literal, $t:ty) => { g!(glib, $n, $t) };
             (pango $n:literal, $t:ty) => { g!(pango, $n, $t) };
+            (pixbuf $n:literal, $t:ty) => { g!(pixbuf, $n, $t) };
         }
         let lib = Lib {
             gtk_init_check: gs!("gtk_init_check", unsafe extern "C" fn() -> c_int),
@@ -283,6 +306,22 @@ fn load_lib() -> Result<Lib, String> {
             gtk_text_view_get_visible_rect: gs!("gtk_text_view_get_visible_rect", unsafe extern "C" fn(Ptr, *mut c_int)),
             gtk_text_view_get_line_at_y: gs!("gtk_text_view_get_line_at_y", unsafe extern "C" fn(Ptr, *mut TextIter, c_int, *mut c_int)),
             gtk_text_view_scroll_to_mark: gs!("gtk_text_view_scroll_to_mark", unsafe extern "C" fn(Ptr, Ptr, f64, c_int, f64, f64)),
+            gtk_text_buffer_create_child_anchor: gs!("gtk_text_buffer_create_child_anchor", unsafe extern "C" fn(Ptr, *const TextIter) -> Ptr),
+            gtk_text_view_add_child_at_anchor: gs!("gtk_text_view_add_child_at_anchor", unsafe extern "C" fn(Ptr, Ptr, Ptr)),
+            gtk_picture_new: gs!("gtk_picture_new", unsafe extern "C" fn() -> Ptr),
+            gtk_picture_set_paintable: gs!("gtk_picture_set_paintable", unsafe extern "C" fn(Ptr, Ptr)),
+            gdk_memory_texture_new: gs!("gdk_memory_texture_new", unsafe extern "C" fn(c_int, c_int, c_int, Ptr, usize) -> Ptr),
+            g_bytes_new_with_free_func: gs!(gio "g_bytes_new_with_free_func", unsafe extern "C" fn(Ptr, usize, Option<unsafe extern "C" fn(Ptr)>, Ptr) -> Ptr),
+            gdk_pixbuf_loader_new_with_type: gs!(pixbuf "gdk_pixbuf_loader_new_with_type", unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr),
+            gdk_pixbuf_loader_write: gs!(pixbuf "gdk_pixbuf_loader_write", unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int),
+            gdk_pixbuf_loader_close: gs!(pixbuf "gdk_pixbuf_loader_close", unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int),
+            gdk_pixbuf_loader_get_pixbuf: gs!(pixbuf "gdk_pixbuf_loader_get_pixbuf", unsafe extern "C" fn(Ptr) -> Ptr),
+            gdk_pixbuf_get_width: gs!(pixbuf "gdk_pixbuf_get_width", unsafe extern "C" fn(Ptr) -> c_int),
+            gdk_pixbuf_get_height: gs!(pixbuf "gdk_pixbuf_get_height", unsafe extern "C" fn(Ptr) -> c_int),
+            gdk_pixbuf_scale_simple: gs!(pixbuf "gdk_pixbuf_scale_simple", unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr),
+            gdk_pixbuf_get_pixels: gs!(pixbuf "gdk_pixbuf_get_pixels", unsafe extern "C" fn(Ptr) -> Ptr),
+            gdk_pixbuf_get_rowstride: gs!(pixbuf "gdk_pixbuf_get_rowstride", unsafe extern "C" fn(Ptr) -> c_int),
+            g_bytes_unref: gs!(gio "g_bytes_unref", unsafe extern "C" fn(Ptr)),
             gtk_text_view_get_iter_location: gs!("gtk_text_view_get_iter_location", unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int)),
             gtk_scrolled_window_get_hadjustment: gs!("gtk_scrolled_window_get_hadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
             gtk_scrolled_window_get_vadjustment: gs!("gtk_scrolled_window_get_vadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
@@ -365,6 +404,7 @@ fn load_lib() -> Result<Lib, String> {
             pango_font_description_free: gs!(pango "pango_font_description_free", unsafe extern "C" fn(Ptr)),
             g_object_set: gs!(go "g_object_set", unsafe extern "C" fn(Ptr, *const c_char, ...)),
             g_object_unref: gs!(go "g_object_unref", unsafe extern "C" fn(Ptr)),
+            g_object_ref: gs!(go "g_object_ref", unsafe extern "C" fn(Ptr) -> Ptr),
             g_object_ref_sink: gs!(go "g_object_ref_sink", unsafe extern "C" fn(Ptr) -> Ptr),
             gtk_widget_paintable_new: gs!("gtk_widget_paintable_new", unsafe extern "C" fn(Ptr) -> Ptr),
             gtk_snapshot_new: gs!("gtk_snapshot_new", unsafe extern "C" fn() -> Ptr),
@@ -454,6 +494,14 @@ struct App {
     rescroll_left: u8,
     rescroll_upper: f64,
     pending_top: Option<(usize, i32)>,
+    /// SVG text per diagram block, keyed by (info string, source, dark):
+    /// re-renders for zoom/resize reuse the engine output and only re-raster
+    /// at the new scale; None = failed, also cached, so a broken block never
+    /// re-runs the engine on every frame. Cleared when another document loads.
+    svg_cache: HashMap<(String, String, bool), Option<String>>,
+    /// the current document shows at least one picture (a theme flip must
+    /// re-emit those: palettes are baked into the SVG at render time)
+    has_diagrams: bool,
     /// resize debounce: a new column budget must be seen on two ticks in a row
     seen_cols: usize,
     seen_count: u8,
@@ -619,7 +667,14 @@ unsafe fn apply_theme_colors() {
 
 // style manager notify::dark handler: (instance, param-spec, user_data).
 unsafe extern "C" fn on_dark_changed(_: Ptr, _: Ptr, _: Ptr) {
-    unsafe { apply_theme_colors() }
+    unsafe {
+        apply_theme_colors();
+        // tags repaint live, but a picture's palette is baked in at render
+        // time: re-emit the document when it shows any
+        if (*app()).has_diagrams && (*app()).src_cache.is_some() {
+            relayout_cached();
+        }
+    }
 }
 
 /// Measure the real pixel width of one monospace column at the current zoom:
@@ -1069,6 +1124,117 @@ unsafe fn emit_wrapped(frags: &[Vec<Span>], lead: &[Span], first: &[String], con
     insert_text("\n", if n > 1 { cont } else { first });
 }
 
+/// Raster for a diagram code block, or null when the block stays text.
+/// `vector` decides which blocks are pictures and produces the SVG (with a
+/// per-document cache); gdk-pixbuf's SVG loader (librsvg) turns it into
+/// pixels, scaled to the current zoom. Missing SVG loader, unparsable SVG,
+/// a panic in either engine: all of them fall through to plain code.
+unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
+    if !(vector::is_mermaid(lang) || vector::art_lang(lang)) {
+        return std::ptr::null_mut();
+    }
+    let src = lines.join("\n");
+    let dark = (l().adw_style_manager_get_dark)((l().adw_style_manager_get_default)()) != 0;
+    let key = (lang.to_string(), src.clone(), dark);
+    let svg = match (*app()).svg_cache.get(&key) {
+        Some(hit) => hit.clone(),
+        None => {
+            let built = vector::diagram_svg(lang, &src, dark).or_else(|| {
+                // built-in mmdr is 0.3.x; an installed newer CLI gets a vote
+                if vector::is_mermaid(lang) { vector::mermaid_via_cli(&src) } else { None }
+            });
+            (*app()).svg_cache.insert(key, built.clone());
+            built
+        }
+    };
+    let Some(svg) = svg else { return std::ptr::null_mut() };
+    let mut err = std::ptr::null_mut();
+    let loader = (l().gdk_pixbuf_loader_new_with_type)(c"svg".as_ptr(), &mut err);
+    if loader.is_null() {
+        return std::ptr::null_mut(); // this machine has no SVG pixbuf loader
+    }
+    let ok = (l().gdk_pixbuf_loader_write)(loader, svg.as_ptr(), svg.len(), &mut err) != 0
+        && (l().gdk_pixbuf_loader_close)(loader, &mut err) != 0;
+    let base = if ok { (l().gdk_pixbuf_loader_get_pixbuf)(loader) } else { std::ptr::null_mut() };
+    let scale = (*app()).zoom;
+    let (w, h) = ((l().gdk_pixbuf_get_width)(base), (l().gdk_pixbuf_get_height)(base));
+    // a sane floor and ceiling: never a 0-px picture, never a 64 MP one
+    let (w, h) = (w.max(8).min(4096), h.max(8).min(4096));
+    let zoomed = if base.is_null() || (scale - 1.0).abs() < 0.01 {
+        if base.is_null() { std::ptr::null_mut() } else { (l().g_object_ref)(base) }
+    } else {
+        // GDK_INTERP_BILINEAR = 2
+        (l().gdk_pixbuf_scale_simple)(base, (w as f64 * scale) as c_int, (h as f64 * scale) as c_int, 2)
+    };
+    (l().g_object_unref)(loader);
+    zoomed
+}
+
+/// Wrap a GdkPixbuf's pixels in a GdkMemoryTexture (8-bit straight-alpha
+/// RGBA, which is what the SVG loader yields). The GBytes carries an extra
+/// reference to the pixbuf and drops it when the last user of the bytes is
+/// gone, so the pixels stay alive exactly as long as the texture reads them.
+unsafe fn texture_of_pixbuf(pb: Ptr) -> Ptr {
+    let (w, h) = ((l().gdk_pixbuf_get_width)(pb), (l().gdk_pixbuf_get_height)(pb));
+    let stride = (l().gdk_pixbuf_get_rowstride)(pb);
+    let px = (l().gdk_pixbuf_get_pixels)(pb);
+    if w <= 0 || h <= 0 || stride <= 0 || px.is_null() {
+        return std::ptr::null_mut();
+    }
+    (l().g_object_ref)(pb); // the reference owned by the byte block below
+    let bytes = (l().g_bytes_new_with_free_func)(
+        px,
+        stride as usize * h as usize,
+        Some(l().g_object_unref),
+        pb,
+    );
+    let tex = (l().gdk_memory_texture_new)(w, h, 5 /* GDK_MEMORY_R8G8B8A8 */, bytes, stride as usize);
+    (l().g_bytes_unref)(bytes);
+    tex
+}
+
+/// Emit a picture block: the quote bar (its line, its tags) plus the
+/// raster at a child anchor; true when the block became a picture. An
+/// anchor occupies one buffer char, which is what `emit_off` and the scroll
+/// anchors must count.
+unsafe fn emit_picture(pb: Ptr, depth: usize) -> bool {
+    let tex = texture_of_pixbuf(pb);
+    if tex.is_null() {
+        (l().g_object_unref)(pb);
+        return false; // keep the block as code after all
+    }
+    let a = &mut *app();
+    a.has_diagrams = true;
+    let t = vec![ensure_cb(depth)];
+    if depth > 0 {
+        let mut bt = t.clone();
+        bt.push("lead".into());
+        bt.push("role-bar".into());
+        insert_text(&bar_text(depth), &bt);
+    }
+    let mut it = TextIter::default();
+    (l().gtk_text_buffer_get_end_iter)(a.buffer, &mut it);
+    let anchor = (l().gtk_text_buffer_create_child_anchor)(a.buffer, &it);
+    // GtkPicture + GdkMemoryTexture, not the deprecated GtkImage pixbuf API
+    // (on 4.22 a pixbuf image silently stays empty), and with an explicit
+    // size request: GtkTextView measures a Picture child as 0x0 on its own
+    // (verified on 4.22), so the natural size must be stated
+    let img = (l().gtk_picture_new)();
+    (l().gtk_picture_set_paintable)(img, tex);
+    (l().g_object_unref)(tex);
+    (l().gtk_widget_set_size_request)(img, (l().gdk_pixbuf_get_width)(pb), (l().gdk_pixbuf_get_height)(pb));
+    (l().g_object_unref)(pb); // the texture holds what it needs in its bytes
+    (l().gtk_text_view_add_child_at_anchor)(a.view, img, anchor);
+    // deliberately NOT unreferenced: creating the anchor at a buffer iter
+    // hands GTK's text-child machinery the caller's reference (verified on
+    // 4.22: an immediate unref finalizes under the live text and the next
+    // re-render g_errors; unrefing after the buffer dropped the char is a
+    // double free, G_IS_OBJECT criticals). The buffer frees it with the char
+    a.emit_off += 1;
+    insert_text("\n", &t);
+    true
+}
+
 unsafe fn emit(lines: &[Line], depth: usize) {
     for line in lines {
         let a = &mut *app();
@@ -1119,7 +1285,11 @@ unsafe fn emit(lines: &[Line], depth: usize) {
                 let frags = wrap_spans_px(&body, wrap_px(depth, left), 1.0, false);
                 emit_wrapped(&frags, &lead, &t, &t, depth, *hanging);
             }
-            Line::Code { lines, .. } => {
+            Line::Code { lang, lines } => {
+                let pb = picture_for(lang, lines);
+                if !pb.is_null() && emit_picture(pb, depth) {
+                    continue;
+                }
                 let t = vec![ensure_cb(depth)];
                 for cl in lines {
                     if depth > 0 {
@@ -1327,6 +1497,10 @@ unsafe fn render_source(src: &str, cols: usize, keep: bool) {
     a.emit_off = 0;
     a.block_starts.clear();
     a.synth.clear();
+    a.has_diagrams = false;
+    if !keep {
+        a.svg_cache.clear(); // another document's pictures are not ours
+    }
     emit(&parsed, 0);
 
     let a = &mut *app();
@@ -2066,6 +2240,8 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         ptags: HashMap::new(),
         ctags: Vec::new(),
         fit_tags: HashMap::new(),
+        svg_cache: HashMap::new(),
+        has_diagrams: false,
         emit_off: 0,
         block_starts: Vec::new(),
         synth: Vec::new(),

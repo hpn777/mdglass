@@ -38,6 +38,8 @@ In the window, use `Ctrl+F` to find, `Ctrl+O` to open, and `Ctrl++` / `Ctrl+-` t
 Prose wraps to the window; wide tables and diagrams keep their shape and scroll sideways.
 Those wraps are real line breaks, as in the terminal: find does not match a phrase split
 across two lines, copied text keeps the breaks, and resizing or zooming clears a selection.
+In the window, ```` ```mermaid ```` blocks and untyped box-art blocks are drawn as vector
+graphics (terminal output stays text); any block that cannot be drawn stays a code block.
 
 See `man mdglass` for all options.
 
