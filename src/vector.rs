@@ -3,7 +3,8 @@
 //! Pure logic, no GTK: which code blocks become pictures, and how their SVG
 //! is produced. Every entry point fails soft (`None`) so the caller keeps the
 //! plain code block, and both engines are `catch_unwind`-wrapped: a parser
-//! panic must degrade to text, never close the window.
+//! panic must degrade to text, never close the window. `catch_unwind` cannot
+//! stop a stack overflow or an abort, so engine input is size-capped too.
 
 use std::panic::catch_unwind;
 
@@ -18,39 +19,79 @@ pub fn art_lang(lang: &str) -> bool {
     matches!(lang.trim().to_ascii_lowercase().as_str(), "" | "text" | "txt" | "diagram" | "art")
 }
 
+/// Engines are forgiving but not infinite: layout time and parser recursion
+/// grow with the input, run on the UI thread, and a deep enough recursion is
+/// a SIGSEGV that catch_unwind cannot catch. Oversized blocks stay text.
+fn fits(text: &str) -> bool {
+    text.len() <= 200_000 && text.lines().count() <= 2000
+}
+
 /// Unicode box drawing and arrows mapped onto the ASCII dialect the aasvg
-/// recognizer understands (`+` corners, `-`/`|` rules, `>`/`<` arrow heads).
-/// Everything else passes through, one column stays one column.
+/// recognizer understands (`+` corners, `-`/`|` rules, `>`/`<`/`v`/`^` arrow
+/// heads). Everything else passes through; every mapping is one column.
 pub fn to_ascii(art: &str) -> String {
     art.chars()
         .map(|c| match c {
             '│' | '┃' | '╎' | '╏' | '┆' | '┇' | '┊' | '┋' | '║' => '|',
             '─' | '━' | '═' | '╌' | '╍' | '┄' | '┅' | '┈' | '┉' => '-',
+            '╱' => '/',
+            '╲' => '\\',
+            '╳' => 'X',
             '┌' | '┍' | '┎' | '┏' | '╒' | '╓' | '╔' | '╭' => '+',
             '┐' | '┑' | '┒' | '┓' | '╕' | '╖' | '╗' | '╮' => '+',
             '└' | '┕' | '┖' | '┗' | '╘' | '╙' | '╚' | '╰' => '+',
             '┘' | '┙' | '┚' | '┛' | '╛' | '╜' | '╝' | '╯' => '+',
             c if ('\u{251C}'..='\u{254C}').contains(&c) => '+', // ├..┬ row/block junctions
-            c if ('\u{2550}'..='\u{2573}').contains(&c) => '+', // ═..╬ double lines
-            '→' | '⇒' | '▶' => '>',
-            '←' | '⇐' | '◀' => '<',
+            c if ('\u{2552}'..='\u{2570}').contains(&c) => '+', // double junctions and rounded corners
+            '→' | '⇒' | '▶' | '►' | '▸' | '▹' => '>',
+            '←' | '⇐' | '◀' | '◄' | '◂' | '◃' => '<',
+            '↓' | '▼' | '▾' => 'v',
+            '↑' | '▲' | '▴' => '^',
             c => c,
         })
         .collect()
 }
 
+/// `[=====>    ] 50%`: a progress bar, not a diagram.
+fn progress_bar(line: &str) -> bool {
+    let t = line.trim_start();
+    let Some(body) = t.strip_prefix('[') else { return false };
+    if !t.contains('%') {
+        return false;
+    }
+    // the run is ASCII by construction, so byte-slicing after it is safe
+    let run = body.chars().take_while(|c| matches!(c, '=' | '-' | '#' | '+' | '>')).count();
+    run >= 3 && body[run..].trim_start().starts_with(']')
+}
+
 /// Does this block look like box art aasvg can draw? Deliberately strict:
-/// a false positive turns ordinary code into a picture, a false negative
-/// just keeps today's text block. Rules: bounded size, ASCII-only after the
-/// box translation (double-width glyphs would desync aasvg's column math),
-/// art glyphs on most lines, and either a closed `+---+` box or an `-->`
-/// arrow.
+/// a false positive turns ordinary code into a picture (and its text into
+/// pixels find cannot see), a false negative just keeps today's text block.
+/// `lines` arrive already `to_ascii`-translated (the render path does that).
 pub fn looks_like_art(lines: &[String]) -> bool {
-    if lines.len() < 2 || lines.len() > 48 || lines.iter().any(|l| l.len() > 140 || l.contains('\t')) {
+    if lines.len() < 2 || lines.len() > 48 || lines.iter().any(|l| l.len() > 140 || l.contains('\t'))
+    {
         return false;
     }
     let all = lines.join("\n");
-    if all.chars().any(|c| crate::ansi::char_width(c) > 1) {
+    // aasvg's column grid needs exactly one cell per char: no double-width
+    // glyphs and no zero-width marks shifting the grid
+    if all.chars().any(|c| c != '\n' && crate::ansi::char_width(c) != 1) {
+        return false;
+    }
+    // markup is never box art, and vectorizing it would hide HTML people
+    // came to this file to read (unclosed tags turn into label mush)
+    if all.contains("</") || all.contains("/>") || all.contains("<!--") || all.contains("<!") {
+        return false;
+    }
+    if lines.iter().any(|l| progress_bar(l)) {
+        return false;
+    }
+    // psql/mysql/RST grid tables: `| a | b |` rows. They ARE boxes, but
+    // their content is data, and a picture of data cannot be searched or
+    // copied, so text wins whenever multi-column rows carry the block
+    let rows = lines.iter().filter(|l| l.matches('|').count() >= 3).count();
+    if rows >= 3 && rows * 2 >= lines.len() {
         return false;
     }
     let flat = to_ascii(&all);
@@ -70,15 +111,29 @@ pub fn looks_like_art(lines: &[String]) -> bool {
         })
     });
     let arrow = ["-->", "<--", "==>", "<=="].iter().any(|a| flat.contains(a));
-    // a line is "art" when line/arrow glyphs make up a third of its
-    // non-space content: true of box rules and arrows, false of code that
-    // merely contains `=` or a `-->` in a comment
+    // a line is "art" when line glyphs and true arrow heads outweigh its
+    // printables: `<`/`>` count only as arrow heads, i.e. touching a RUN of
+    // at least two rule chars (`-->` yes, `a <= b` no), so comparison
+    // operators never qualify
     let art_lines = lines
         .iter()
         .filter(|l| {
-            let art = l.chars().filter(|c| matches!(c, '+' | '-' | '|' | '=' | '>' | '<')).count();
-            let solid = l.chars().filter(|c| !c.is_whitespace()).count().max(1);
-            art >= 2 && art * 3 >= solid
+            let b: Vec<char> = l.chars().collect();
+            let rule = |c: char| c == '-' || c == '=';
+            let run_after = |i: usize| b[i..].iter().take_while(|c| rule(**c)).count();
+            let run_before = |i: usize| b[..i].iter().rev().take_while(|c| rule(**c)).count();
+            let art = b
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| match **c {
+                    '+' | '-' | '|' | '=' => true,
+                    '<' => run_after(i + 1) >= 2,
+                    '>' => run_before(*i) >= 2,
+                    _ => false,
+                })
+                .count();
+            let solid = b.iter().filter(|c| !c.is_whitespace()).count().max(1);
+            art >= 2 && art * 3 > solid
         })
         .count();
     (boxy || arrow) && art_lines * 2 >= lines.len()
@@ -87,31 +142,36 @@ pub fn looks_like_art(lines: &[String]) -> bool {
 /// Pin aasvg's palette to the current theme before rasterizing. librsvg
 /// resolves `var()` only from stylesheets, never from presentation
 /// attributes (verified against 2.61: the var() strokes rasterize to
-/// nothing), so every `var(--aasvg-*)` reference becomes the literal color
-/// and the CSS block is dropped.
-pub fn svg_theme(svg: &str, dark: bool) -> String {
-    let (stroke, bg, text) = if dark { ("#9a999d", "#242424", "#dfdfdf") } else { ("#5e5c64", "#ffffff", "#222222") };
-    let mut out = svg.to_string();
-    if let (Some(a), Some(rel)) = (out.find("<style>"), out.find("</style>")) {
-        out.replace_range(a..rel + "</style>".len(), "");
-    }
-    for (var, color) in [
-        ("var(--aasvg-stroke)", stroke),
-        ("var(--aasvg-fill)", stroke),
-        ("var(--aasvg-bg)", bg),
-        ("var(--aasvg-text)", text),
-    ] {
+/// nothing), so every reference becomes the literal color and the CSS block
+/// is dropped. If the input is not the shape aasvg emits today, `None`:
+/// an unthemed picture on the wrong background is worse than code text.
+pub fn svg_theme(svg: &str, dark: bool) -> Option<String> {
+    let (stroke, bg, text) =
+        if dark { ("#9a999d", "#242424", "#dfdfdf") } else { ("#5e5c64", "#ffffff", "#222222") };
+    let a = svg.find("<style>")?;
+    let rel = svg[a..].find("</style>")?; // searched after the opening tag
+    let mut out = format!("{}{}", &svg[..a], &svg[a + rel + "</style>".len()..]);
+    for (var, color) in
+        [("var(--aasvg-stroke)", stroke), ("var(--aasvg-fill)", stroke), ("var(--aasvg-bg)", bg), ("var(--aasvg-text)", text)]
+    {
         out = out.replace(var, color);
     }
-    out
+    if out.contains("var(") {
+        return None; // a variable we do not know would render invisible
+    }
+    Some(out)
 }
 
-/// SVG for a code block, or None to keep it as text. `dark` themes the art;
-/// Mermaid SVGs carry their own (light) palette, like embedded images do.
-pub fn diagram_svg(lang: &str, text: &str, dark: bool) -> Option<String> {
+/// Raw SVG from the engine named by `lang`, or None to keep the block as
+/// text. Theme-independent, so a light/dark flip never re-runs an engine.
+pub fn engine_svg(lang: &str, text: &str) -> Option<String> {
+    if !fits(text) {
+        return None;
+    }
     if is_mermaid(lang) {
         let text = text.to_string();
-        return catch_unwind(move || mermaid_rs_renderer::render(&text)).ok()?.ok();
+        let built = catch_unwind(move || mermaid_rs_renderer::render(&text)).ok()?;
+        return built.ok();
     }
     if !art_lang(lang) {
         return None;
@@ -121,8 +181,16 @@ pub fn diagram_svg(lang: &str, text: &str, dark: bool) -> Option<String> {
     if !looks_like_art(&lines) {
         return None;
     }
-    let svg = catch_unwind(move || aasvg::render(&ascii)).ok()?;
-    Some(svg_theme(&svg, dark))
+    catch_unwind(move || aasvg::render(&ascii)).ok()
+}
+
+/// Engine output themed for the current style; mermaid SVGs carry their own
+/// (light) palette and pass through, like embedded images do.
+pub fn apply_theme(lang: &str, raw: &str, dark: bool) -> Option<String> {
+    if is_mermaid(lang) {
+        return Some(raw.to_string());
+    }
+    svg_theme(raw, dark)
 }
 
 /// Second-chance Mermaid through an installed `mmdr` CLI, when the built-in
@@ -130,6 +198,9 @@ pub fn diagram_svg(lang: &str, text: &str, dark: bool) -> Option<String> {
 pub fn mermaid_via_cli(text: &str) -> Option<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    if !fits(text) {
+        return None;
+    }
     let mut child = Command::new("mmdr")
         .args(["-e", "svg"])
         .stdin(Stdio::piped())
@@ -137,7 +208,11 @@ pub fn mermaid_via_cli(text: &str) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    child.stdin.as_mut()?.write_all(text.as_bytes()).ok()?;
+    // close stdin even when the write fails, and always reap the child:
+    // an early return here used to leak a zombie next to a blocked mmdr
+    if let Some(mut si) = child.stdin.take() {
+        let _ = si.write_all(text.as_bytes());
+    }
     let out = child.wait_with_output().ok()?;
     if out.status.success() && out.stdout.windows(5).any(|w| w == b"<svg ") {
         String::from_utf8(out.stdout).ok()
@@ -166,9 +241,34 @@ mod tests {
     }
 
     #[test]
+    fn gate_rejects_html_bars_tables_comparisons() {
+        // every one of these used to vectorize into a picture
+        assert!(!looks_like_art(&lines("<ul>\n  <li>one</li>\n  <!-- more -->\n</ul>")));
+        assert!(!looks_like_art(&lines("<!-- header -->\n<p>hi</p>")));
+        assert!(!looks_like_art(&lines("<App>\n  <Header />\n  <Main>{x}</Main>\n  {/* <!-- --> */}\n</App>")));
+        assert!(!looks_like_art(&lines("[=====>     ] 50%\n[==========>] 100%")));
+        assert!(!looks_like_art(&lines("a <= b\nb >= c\nc == d --> e")));
+        // psql/mysql/RST grid tables keep their searchable text
+        assert!(!looks_like_art(&lines(
+            "+----+-------+\n| id | name  |\n+----+-------+\n| 1  | alice |\n| 2  | bob   |\n+----+-------+"
+        )));
+        // ...but a real flow with a couple of boxes is still art
+        assert!(looks_like_art(&lines(
+            "+--------+      +--------+\n| Client |----->| Server |\n+--------+      +--------+"
+        )));
+    }
+
+    #[test]
+    fn gate_rejects_zero_width_shifters() {
+        // VS16/ZWSP would slide aasvg's column grid out of sync
+        assert!(!looks_like_art(&lines("+------\u{200b}+\n| a b\u{fe0f} |\n+------+")));
+    }
+
+    #[test]
     fn unicode_maps_to_dialect() {
         assert_eq!(to_ascii("\u{250c}\u{2500}\u{2510}\u{2502}\u{2514}\u{2500}\u{2518}\u{251c}\u{252c}\u{2524}\u{2534}\u{253c}\u{2550}\u{2551}"), "+-+|+-++++++-|"); // ═ maps to the - rule
         assert_eq!(to_ascii("a → b ← c ⇒ d ▶ e ◀ f"), "a > b < c > d > e < f");
+        assert_eq!(to_ascii("↓ ▲ ╱ ╲ ╳"), "v ^ / \\ X");
         assert_eq!(to_ascii("plain: text │ ok"), "plain: text | ok");
         // the round trip the docs promise: unicode boxes vectorize after mapping
         let uni = "\u{250c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}\n\u{2502} db \u{2502}\n\u{2514}\u{2500}\u{2500}\u{2500}\u{2500}\u{2518}";
@@ -178,25 +278,32 @@ mod tests {
     #[test]
     fn aasvg_vectors_the_art_and_theme_pins_colors() {
         let art = "+------+\n| db   |----> out\n+------+\n";
-        let svg = diagram_svg("", art, true).expect("art renders");
+        let raw = engine_svg("", art, ).expect("art renders");
+        assert!(raw.contains("<style>"), "engine emits the themed shape");
+        let svg = apply_theme("", &raw, true).expect("theme applies");
         assert!(svg.contains("<path"), "expected vector paths");
         assert!(svg.contains("stroke=\"#9a999d\""), "dark stroke pinned");
         assert!(svg.contains("fill=\"#dfdfdf\""), "label color pinned");
         assert!(!svg.contains("var(--"), "no unresolved vars left");
         assert!(!svg.contains("<style>"), "CSS block dropped");
-        assert!(diagram_svg("", art, false).unwrap().contains("stroke=\"#5e5c64\""));
+        assert!(apply_theme("", &raw, false).unwrap().contains("stroke=\"#5e5c64\""));
+        // a differently shaped engine output must fail closed
+        assert_eq!(apply_theme("", "<svg>changed shape</svg>", true), None);
         // typed blocks stay code even when they draw boxes
-        assert!(diagram_svg("rust", art, true).is_none());
-        assert!(diagram_svg("text", art, true).is_some());
+        assert!(engine_svg("rust", art).is_none());
+        assert!(engine_svg("text", art).is_some());
     }
 
     #[test]
     fn mermaid_renders_and_garbage_fails_soft() {
-        let svg = diagram_svg("mermaid", "flowchart LR; A-->B", false).expect("tiny flowchart");
+        let svg = engine_svg("mermaid", "flowchart LR; A-->B").expect("tiny flowchart");
         assert!(svg.contains("<svg"));
-        // unparsable input must be None, not a panic and not a picture
+        assert_eq!(apply_theme("mermaid", &svg, true).unwrap(), svg); // own palette
         // mmdr is forgiving, but rejects a document with no diagram header
-        assert!(diagram_svg("mermaid", "this is not mermaid at all", false).is_none());
+        assert!(engine_svg("mermaid", "this is not mermaid at all").is_none());
+        // oversized input stays text instead of hanging the UI thread
+        assert!(engine_svg("mermaid", &"flowchart LR\n".repeat(30_000)).is_none());
+        assert!(mermaid_via_cli(&"x".repeat(300_000)).is_none());
     }
 
     #[test]
@@ -211,4 +318,3 @@ mod tests {
         assert!(!art_lang("python"));
     }
 }
-

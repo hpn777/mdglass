@@ -6,7 +6,7 @@
 // find, zoom, next/prev file, and live reload when the file changes.
 
 use std::sync::OnceLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_uint, c_ulong, c_void, CStr, CString};
 use std::path::Path;
 use std::time::SystemTime;
@@ -127,6 +127,11 @@ struct Lib {
     gdk_pixbuf_get_width: unsafe extern "C" fn(Ptr) -> c_int,
     gdk_pixbuf_get_height: unsafe extern "C" fn(Ptr) -> c_int,
     gdk_pixbuf_scale_simple: unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr,
+    gdk_pixbuf_loader_set_size: unsafe extern "C" fn(Ptr, c_int, c_int),
+    gdk_pixbuf_get_n_channels: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_has_alpha: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_bits_per_sample: unsafe extern "C" fn(Ptr) -> c_int,
+    g_error_free: unsafe extern "C" fn(Ptr),
     gdk_pixbuf_get_pixels: unsafe extern "C" fn(Ptr) -> Ptr,
     gdk_pixbuf_get_rowstride: unsafe extern "C" fn(Ptr) -> c_int,
     g_bytes_unref: unsafe extern "C" fn(Ptr),
@@ -265,6 +270,17 @@ fn load_lib() -> Result<Lib, String> {
                 }
             };
         }
+        // picture-pipeline symbols (gdk-pixbuf and its diagnostics): a
+        // machine missing one keeps code blocks as text - the GUI starts
+        // and only loses the pictures (picture_for checks for nulls)
+        macro_rules! gopt {
+            ($h:expr, $n:literal, $t:ty) => {
+                match tf::<$t>($h, $n) {
+                    Ok(f) => f,
+                    Err(_) => std::mem::transmute::<*mut c_void, $t>(std::ptr::null_mut()),
+                }
+            };
+        }
         macro_rules! gs {
             ($n:literal, $t:ty) => { g!(gtk, $n, $t) };
             (adw $n:literal, $t:ty) => { g!(adw, $n, $t) };
@@ -311,17 +327,22 @@ fn load_lib() -> Result<Lib, String> {
             gtk_picture_new: gs!("gtk_picture_new", unsafe extern "C" fn() -> Ptr),
             gtk_picture_set_paintable: gs!("gtk_picture_set_paintable", unsafe extern "C" fn(Ptr, Ptr)),
             gdk_memory_texture_new: gs!("gdk_memory_texture_new", unsafe extern "C" fn(c_int, c_int, c_int, Ptr, usize) -> Ptr),
-            g_bytes_new_with_free_func: gs!(gio "g_bytes_new_with_free_func", unsafe extern "C" fn(Ptr, usize, Option<unsafe extern "C" fn(Ptr)>, Ptr) -> Ptr),
-            gdk_pixbuf_loader_new_with_type: gs!(pixbuf "gdk_pixbuf_loader_new_with_type", unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr),
-            gdk_pixbuf_loader_write: gs!(pixbuf "gdk_pixbuf_loader_write", unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int),
-            gdk_pixbuf_loader_close: gs!(pixbuf "gdk_pixbuf_loader_close", unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int),
-            gdk_pixbuf_loader_get_pixbuf: gs!(pixbuf "gdk_pixbuf_loader_get_pixbuf", unsafe extern "C" fn(Ptr) -> Ptr),
-            gdk_pixbuf_get_width: gs!(pixbuf "gdk_pixbuf_get_width", unsafe extern "C" fn(Ptr) -> c_int),
-            gdk_pixbuf_get_height: gs!(pixbuf "gdk_pixbuf_get_height", unsafe extern "C" fn(Ptr) -> c_int),
-            gdk_pixbuf_scale_simple: gs!(pixbuf "gdk_pixbuf_scale_simple", unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr),
-            gdk_pixbuf_get_pixels: gs!(pixbuf "gdk_pixbuf_get_pixels", unsafe extern "C" fn(Ptr) -> Ptr),
-            gdk_pixbuf_get_rowstride: gs!(pixbuf "gdk_pixbuf_get_rowstride", unsafe extern "C" fn(Ptr) -> c_int),
-            g_bytes_unref: gs!(gio "g_bytes_unref", unsafe extern "C" fn(Ptr)),
+            g_bytes_new_with_free_func: gs!(glib "g_bytes_new_with_free_func", unsafe extern "C" fn(Ptr, usize, Option<unsafe extern "C" fn(Ptr)>, Ptr) -> Ptr),
+            gdk_pixbuf_loader_new_with_type: gopt!(pixbuf, "gdk_pixbuf_loader_new_with_type", unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr),
+            gdk_pixbuf_loader_write: gopt!(pixbuf, "gdk_pixbuf_loader_write", unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int),
+            gdk_pixbuf_loader_close: gopt!(pixbuf, "gdk_pixbuf_loader_close", unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int),
+            gdk_pixbuf_loader_get_pixbuf: gopt!(pixbuf, "gdk_pixbuf_loader_get_pixbuf", unsafe extern "C" fn(Ptr) -> Ptr),
+            gdk_pixbuf_get_width: gopt!(pixbuf, "gdk_pixbuf_get_width", unsafe extern "C" fn(Ptr) -> c_int),
+            gdk_pixbuf_get_height: gopt!(pixbuf, "gdk_pixbuf_get_height", unsafe extern "C" fn(Ptr) -> c_int),
+            gdk_pixbuf_scale_simple: gopt!(pixbuf, "gdk_pixbuf_scale_simple", unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr),
+            gdk_pixbuf_loader_set_size: gopt!(pixbuf, "gdk_pixbuf_loader_set_size", unsafe extern "C" fn(Ptr, c_int, c_int)),
+            gdk_pixbuf_get_n_channels: gopt!(pixbuf, "gdk_pixbuf_get_n_channels", unsafe extern "C" fn(Ptr) -> c_int),
+            gdk_pixbuf_get_has_alpha: gopt!(pixbuf, "gdk_pixbuf_get_has_alpha", unsafe extern "C" fn(Ptr) -> c_int),
+            gdk_pixbuf_get_bits_per_sample: gopt!(pixbuf, "gdk_pixbuf_get_bits_per_sample", unsafe extern "C" fn(Ptr) -> c_int),
+            g_error_free: gopt!(glib, "g_error_free", unsafe extern "C" fn(Ptr)),
+            gdk_pixbuf_get_pixels: gopt!(pixbuf, "gdk_pixbuf_get_pixels", unsafe extern "C" fn(Ptr) -> Ptr),
+            gdk_pixbuf_get_rowstride: gopt!(pixbuf, "gdk_pixbuf_get_rowstride", unsafe extern "C" fn(Ptr) -> c_int),
+            g_bytes_unref: gs!(glib "g_bytes_unref", unsafe extern "C" fn(Ptr)),
             gtk_text_view_get_iter_location: gs!("gtk_text_view_get_iter_location", unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int)),
             gtk_scrolled_window_get_hadjustment: gs!("gtk_scrolled_window_get_hadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
             gtk_scrolled_window_get_vadjustment: gs!("gtk_scrolled_window_get_vadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
@@ -494,11 +515,21 @@ struct App {
     rescroll_left: u8,
     rescroll_upper: f64,
     pending_top: Option<(usize, i32)>,
-    /// SVG text per diagram block, keyed by (info string, source, dark):
-    /// re-renders for zoom/resize reuse the engine output and only re-raster
-    /// at the new scale; None = failed, also cached, so a broken block never
+    /// raw engine SVG per diagram block, keyed by (info string, source):
+    /// theme-independent, so a light/dark flip never re-runs an engine nor
+    /// respawns the CLI. None = failed, also cached, so a broken block never
     /// re-runs the engine on every frame. Cleared when another document loads.
-    svg_cache: HashMap<(String, String, bool), Option<String>>,
+    svg_cache: HashMap<(String, String), Option<String>>,
+    /// decoded picture per (info string, source, dark) at the zoom it was
+    /// made for; re-emits at the same zoom (scroll, resize, live reload)
+    /// reuse it without touching librsvg again. Each entry holds one
+    /// reference to its GdkPixbuf, dropped when the entry is pruned.
+    raster_cache: HashMap<(String, String, bool), (f64, Ptr)>,
+    /// keys the current emit actually used; the caches shrink to these at
+    /// the end of every render, so live reloads cannot pile up revisions
+    /// forever (they re-render with keep = true and would never clear)
+    used_svg: HashSet<(String, String)>,
+    used_raster: HashSet<(String, String, bool)>,
     /// the current document shows at least one picture (a theme flip must
     /// re-emit those: palettes are baked into the SVG at render time)
     has_diagrams: bool,
@@ -1125,49 +1156,147 @@ unsafe fn emit_wrapped(frags: &[Vec<Span>], lead: &[Span], first: &[String], con
 }
 
 /// Raster for a diagram code block, or null when the block stays text.
-/// `vector` decides which blocks are pictures and produces the SVG (with a
-/// per-document cache); gdk-pixbuf's SVG loader (librsvg) turns it into
-/// pixels, scaled to the current zoom. Missing SVG loader, unparsable SVG,
-/// a panic in either engine: all of them fall through to plain code.
+/// `vector` decides which blocks are pictures and which SVG they get (both
+/// cached per document); the SVG is themed for the current style and
+/// decoded by gdk-pixbuf's SVG loader (librsvg), crisp at the current zoom.
+/// Missing SVG loader, unparsable SVG, a panic in either engine, a picture
+/// shape we cannot theme: all of them fall through to plain code.
 unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
     if !(vector::is_mermaid(lang) || vector::art_lang(lang)) {
         return std::ptr::null_mut();
     }
+    // no SVG pixbuf pipeline on this machine: no pictures, no problem
+    let needed: [*const (); 6] = [
+        (l().gdk_pixbuf_loader_new_with_type) as *const (),
+        (l().gdk_pixbuf_loader_write) as *const (),
+        (l().gdk_pixbuf_loader_close) as *const (),
+        (l().gdk_pixbuf_loader_get_pixbuf) as *const (),
+        (l().gdk_pixbuf_get_pixels) as *const (),
+        (l().gdk_pixbuf_get_rowstride) as *const (),
+    ];
+    if needed.iter().any(|p| p.is_null()) {
+        return std::ptr::null_mut();
+    }
     let src = lines.join("\n");
     let dark = (l().adw_style_manager_get_dark)((l().adw_style_manager_get_default)()) != 0;
-    let key = (lang.to_string(), src.clone(), dark);
-    let svg = match (*app()).svg_cache.get(&key) {
+    let key = (lang.to_string(), src.clone());
+    let raw = match (*app()).svg_cache.get(&key) {
         Some(hit) => hit.clone(),
         None => {
-            let built = vector::diagram_svg(lang, &src, dark).or_else(|| {
+            let built = vector::engine_svg(lang, &src).or_else(|| {
                 // built-in mmdr is 0.3.x; an installed newer CLI gets a vote
                 if vector::is_mermaid(lang) { vector::mermaid_via_cli(&src) } else { None }
             });
-            (*app()).svg_cache.insert(key, built.clone());
+            (*app()).svg_cache.insert(key.clone(), built.clone());
             built
         }
     };
-    let Some(svg) = svg else { return std::ptr::null_mut() };
+    (*app()).used_svg.insert(key.clone());
+    let Some(raw) = raw else { return std::ptr::null_mut() };
+    let Some(svg) = vector::apply_theme(lang, &raw, dark) else { return std::ptr::null_mut() };
+    let zoom = (*app()).zoom;
+    let rkey = (key.0.clone(), key.1.clone(), dark);
+    (*app()).used_raster.insert(rkey.clone());
+    if let Some((z, pb)) = (*app()).raster_cache.get(&rkey) {
+        if (z - zoom).abs() < 0.005 {
+            return (l().g_object_ref)(*pb);
+        }
+    }
+    let pb = rasterize(&svg, zoom);
+    if pb.is_null() {
+        return std::ptr::null_mut();
+    }
+    if let Some((_, old)) = (*app()).raster_cache.insert(rkey, (zoom, pb)) {
+        (l().g_object_unref)(old); // the entry owns one reference...
+    }
+    (l().g_object_ref)(pb) // ...the caller takes another
+}
+
+/// Decode an SVG with gdk-pixbuf's SVG loader. First pass at natural size
+/// to learn the geometry and check the pixel format; when zoom wants a
+/// different size, a second pass asks the loader for it up front so librsvg
+/// renders the vectors at that size instead of upscaling a 1x raster. The
+/// scale factor is uniform (a 6000x400 flowchart clamps both axes the same,
+/// whatever the zoom), so pictures never squash. Owned reference or null.
+unsafe fn rasterize(svg: &str, zoom: f64) -> Ptr {
+    let base = match load_svg(svg, 0, 0) {
+        Some(pb) => pb,
+        None => return std::ptr::null_mut(),
+    };
+    // the texture below declares 8-bit RGBA; a loader handing us anything
+    // else is refused rather than misread (on machines whose pixbuf lacks
+    // the introspection helpers the check is skipped, and librsvg's own
+    // "SVG comes out RGBA" guarantee stands in)
+    let check = !((l().gdk_pixbuf_get_n_channels) as *const ()).is_null()
+        && !((l().gdk_pixbuf_get_has_alpha) as *const ()).is_null()
+        && !((l().gdk_pixbuf_get_bits_per_sample) as *const ()).is_null();
+    let ok = !check
+        || ((l().gdk_pixbuf_get_n_channels)(base) == 4
+            && (l().gdk_pixbuf_get_has_alpha)(base) != 0
+            && (l().gdk_pixbuf_get_bits_per_sample)(base) == 8);
+    if !ok {
+        (l().g_object_unref)(base);
+        return std::ptr::null_mut();
+    }
+    let (w, h) = ((l().gdk_pixbuf_get_width)(base), (l().gdk_pixbuf_get_height)(base));
+    if w <= 0 || h <= 0 {
+        (l().g_object_unref)(base);
+        return std::ptr::null_mut();
+    }
+    // one uniform factor, one ceiling on the larger axis: never a 64 MP
+    // allocation even at the maximum zoom
+    let mx = w.max(h) as f64;
+    let scale = if mx * zoom > 4096.0 { (4096.0 / mx).max(0.02) } else { zoom };
+    if (scale - 1.0).abs() < 0.005 {
+        return base; // already the wanted size; its reference goes to the caller
+    }
+    let tw = ((w as f64 * scale).round() as c_int).max(1);
+    let th = ((h as f64 * scale).round() as c_int).max(1);
+    let crisp = load_svg(svg, tw, th).unwrap_or(std::ptr::null_mut());
+    // a loader that ignores the requested size falls back to resampling
+    let out = if crisp.is_null() {
+        (l().gdk_pixbuf_scale_simple)(base, tw, th, 2 /* GDK_INTERP_BILINEAR */)
+    } else {
+        crisp
+    };
+    (l().g_object_unref)(base);
+    out
+}
+
+/// free() a GError when this gdk-pixbuf/glib exports g_error_free; without
+/// the symbol the error paths leak one small struct per failure, which
+/// still beats losing the GUI over a picture.
+unsafe fn free_err(err: Ptr) {
+    if !err.is_null() && !((l().g_error_free) as *const ()).is_null() {
+        (l().g_error_free)(err);
+    }
+}
+
+/// One gdk-pixbuf load pass; width/height 0 means the SVG's natural size.
+/// Owned reference on success, null on any failure; every GError is freed.
+unsafe fn load_svg(svg: &str, w: c_int, h: c_int) -> Option<Ptr> {
     let mut err = std::ptr::null_mut();
     let loader = (l().gdk_pixbuf_loader_new_with_type)(c"svg".as_ptr(), &mut err);
     if loader.is_null() {
-        return std::ptr::null_mut(); // this machine has no SVG pixbuf loader
+        free_err(err);
+        return None; // this machine has no SVG pixbuf loader
     }
-    let ok = (l().gdk_pixbuf_loader_write)(loader, svg.as_ptr(), svg.len(), &mut err) != 0
-        && (l().gdk_pixbuf_loader_close)(loader, &mut err) != 0;
-    let base = if ok { (l().gdk_pixbuf_loader_get_pixbuf)(loader) } else { std::ptr::null_mut() };
-    let scale = (*app()).zoom;
-    let (w, h) = ((l().gdk_pixbuf_get_width)(base), (l().gdk_pixbuf_get_height)(base));
-    // a sane floor and ceiling: never a 0-px picture, never a 64 MP one
-    let (w, h) = (w.max(8).min(4096), h.max(8).min(4096));
-    let zoomed = if base.is_null() || (scale - 1.0).abs() < 0.01 {
-        if base.is_null() { std::ptr::null_mut() } else { (l().g_object_ref)(base) }
-    } else {
-        // GDK_INTERP_BILINEAR = 2
-        (l().gdk_pixbuf_scale_simple)(base, (w as f64 * scale) as c_int, (h as f64 * scale) as c_int, 2)
-    };
+    if w > 0 && h > 0 && !((l().gdk_pixbuf_loader_set_size) as *const ()).is_null() {
+        (l().gdk_pixbuf_loader_set_size)(loader, w, h);
+    }
+    let wrote = (l().gdk_pixbuf_loader_write)(loader, svg.as_ptr(), svg.len(), &mut err) != 0;
+    free_err(err);
+    err = std::ptr::null_mut();
+    let closed = if wrote { (l().gdk_pixbuf_loader_close)(loader, &mut err) != 0 } else { false };
+    free_err(err);
+    if !closed {
+        (l().g_object_unref)(loader);
+        return None;
+    }
+    let pb = (l().gdk_pixbuf_loader_get_pixbuf)(loader); // borrowed from the loader
+    let out = if pb.is_null() { None } else { Some((l().g_object_ref)(pb)) };
     (l().g_object_unref)(loader);
-    zoomed
+    out
 }
 
 /// Wrap a GdkPixbuf's pixels in a GdkMemoryTexture (8-bit straight-alpha
@@ -1225,11 +1354,11 @@ unsafe fn emit_picture(pb: Ptr, depth: usize) -> bool {
     (l().gtk_widget_set_size_request)(img, (l().gdk_pixbuf_get_width)(pb), (l().gdk_pixbuf_get_height)(pb));
     (l().g_object_unref)(pb); // the texture holds what it needs in its bytes
     (l().gtk_text_view_add_child_at_anchor)(a.view, img, anchor);
-    // deliberately NOT unreferenced: creating the anchor at a buffer iter
-    // hands GTK's text-child machinery the caller's reference (verified on
-    // 4.22: an immediate unref finalizes under the live text and the next
-    // re-render g_errors; unrefing after the buffer dropped the char is a
-    // double free, G_IS_OBJECT criticals). The buffer frees it with the char
+    // deliberately NOT unreferenced: gtk_text_buffer_create_child_anchor is
+    // transfer-none - the buffer owns the only reference and frees the
+    // anchor with the character (verified on 4.22: unref here finalizes
+    // under the live text and the next re-render g_errors; unref after the
+    // buffer dropped the character is a double free, G_IS_OBJECT criticals)
     a.emit_off += 1;
     insert_text("\n", &t);
     true
@@ -1498,10 +1627,33 @@ unsafe fn render_source(src: &str, cols: usize, keep: bool) {
     a.block_starts.clear();
     a.synth.clear();
     a.has_diagrams = false;
+    a.used_svg.clear();
+    a.used_raster.clear();
     if !keep {
         a.svg_cache.clear(); // another document's pictures are not ours
+        for (_, (_, pb)) in a.raster_cache.drain() {
+            (l().g_object_unref)(pb);
+        }
     }
     emit(&parsed, 0);
+    // caches shrink to what this emit used: live reload re-renders with
+    // keep = true, so without this every saved revision of every diagram
+    // would sit in the caches (and hold its pixbuf) until the app closes
+    let used = std::mem::take(&mut a.used_svg);
+    a.svg_cache.retain(|k, _| used.contains(k));
+    a.used_svg = used;
+    let used = std::mem::take(&mut a.used_raster);
+    let old = std::mem::take(&mut a.raster_cache);
+    let mut fresh = HashMap::new();
+    for (k, e) in old {
+        if used.contains(&k) {
+            fresh.insert(k, e);
+        } else {
+            (l().g_object_unref)(e.1);
+        }
+    }
+    a.raster_cache = fresh;
+    a.used_raster = used;
 
     let a = &mut *app();
     let mut it = TextIter::default();
@@ -2241,6 +2393,9 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         ctags: Vec::new(),
         fit_tags: HashMap::new(),
         svg_cache: HashMap::new(),
+        raster_cache: HashMap::new(),
+        used_svg: HashSet::new(),
+        used_raster: HashSet::new(),
         has_diagrams: false,
         emit_off: 0,
         block_starts: Vec::new(),

@@ -58,7 +58,7 @@ def count_args(s):
     return n
 
 bad = 0; checked = 0; unknown = []
-for m in re.finditer(r'gs!\((?:\w+ )?"(\w+)", unsafe extern "C" fn\(', src):
+for m in re.finditer(r'g(?:s|opt)!\((?:\w+[ ,]*)?"(\w+)", unsafe extern "C" fn\(', src):
     name = m.group(1)
     i = m.end(); depth = 1; start = i
     while depth:

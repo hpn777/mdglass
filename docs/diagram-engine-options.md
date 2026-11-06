@@ -127,11 +127,20 @@ when guessed wrong) shape it:
 - `GtkTextView` measures a `GtkPicture` child as **0×0** (a GtkLabel at the
   same anchor measures fine), so the picture needs an explicit
   `gtk_widget_set_size_request`.
-- The reference from `gtk_text_buffer_create_child_anchor` is **adopted by
-  the buffer**. Unreferencing it while the anchor char is live finalizes
-  under the text and the next re-render `g_error`s out of the process
-  (gtktextchild.c widget_segment assertion); unreferencing later is a
-  double free (G_IS_OBJECT criticals). Correct discipline: never unref.
+- The reference from `gtk_text_buffer_create_child_anchor` is **owned by
+  the buffer** (the documented contract is transfer-none). Unreferencing it
+  finalizes the anchor under the live text and the next re-render `g_error`s
+  out of the process (gtktextchild.c widget_segment assertion);
+  unreferencing later is a double free (G_IS_OBJECT criticals). Correct
+  discipline on 4.22: never unref - the buffer frees the anchor with the
+  character, taking the picture widget with it (RSS over 12 live reloads
+  stays flat).
+- A wrong function name is caught at startup, not runtime: the dlopen
+  bootstrap treats missing symbols as fatal, so the picture pipeline's
+  optional half (gdk-pixbuf and its introspection helpers -
+  `gdk_pixbuf_get_has_alpha` is a header macro on some builds, not an
+  exported symbol) loads through a null-tolerant path: no pipeline, no
+  pictures, GUI unaffected.
 - librsvg (2.61) resolves `var()` **only in stylesheets, never in
   presentation attributes** — aasvg emits `stroke="var(--aasvg-stroke)"`,
   which rasterizes to nothing. `svg_theme` replaces every `var(--aasvg-*)`
@@ -139,6 +148,13 @@ when guessed wrong) shape it:
 
 The texture's `GBytes` is built with `g_bytes_new_with_free_func` carrying a
 reference to the source pixbuf, so the pixels stay alive exactly as long as
-the texture reads them. SVG strings (and failures) are cached per document
-by (info string, source, theme); zoom re-rasterizes from cache. Terminal
-output is unchanged: pictures are a window-only enhancement.
+the texture reads them. Caching is two-tier: raw engine SVG (and failures)
+per document keyed by (info string, source) — theme-independent, so a
+light/dark flip never re-runs an engine nor respawns the CLI — and decoded
+pixbufs per (source, theme) at the zoom they were made for, so scrolling,
+live reload and resize touch neither engine nor librsvg, while zoom gets a
+fresh librsvg render at the target size (crisp vectors, never an upscale).
+Both caches prune to the keys the current emit used, because live reload
+re-renders with the cache-retaining flag and would otherwise accumulate
+every saved revision. Zoom clamp: one uniform factor across both axes.
+Terminal output is unchanged: pictures are a window-only enhancement.

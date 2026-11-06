@@ -458,6 +458,32 @@ fn main() {}
     quality("pictures survive a full re-render of the document", dgr_check, p("dgr2.png"))
     quality("pictures stay vector after zooming", dgr_check, p("dgr3.png"))
 
+    # the near-misses must stay text: HTML, progress bars and grid tables
+    # would lose their searchable, copyable content to a picture
+    open(p("notart.md"), "w").write(
+        "# Stays text\n\n```\n<ul>\n  <li>one</li>\n  <!-- more -->\n</ul>\n```\n\n"
+        "```\n[=====>     ] 50%\n[==========>] 100%\n```\n\n"
+        "```\n+----+-------+\n| id | name  |\n+----+-------+\n| 1  | alice |\n"
+        "| 2  | bob   |\n+----+-------+\n```\n\n```mermaid\nthis is not mermaid at all\n```\n")
+    rc, err = run([p("notart.md")], f"shot:{p('notart.png')};quit", scheme="prefer-dark")
+    check("near-miss blocks session exits cleanly", rc == 0, f"exit {rc}\n{err[-400:]}")
+
+    def text_check(path):
+        img = pngread.open(path)
+        best = 0
+        for y in range(56, img.h):
+            xs = lit_xs(img, y, 20, img.w - 16)
+            if xs:
+                best = max(best, longest_run(xs)[0])
+        whites = sum(1 for y in range(56, img.h, 2) for x in range(20, img.w - 16, 2)
+                     if all(c > 235 for c in img.rgb(x, y)[:3]))
+        # a vectorized block would show the >=400px rule and >=8000 canvas
+        # pixels dgr_check demands; the gate must have refused all of them
+        ok = best < 400 and whites < 8000
+        return ok, f"longest run {best}px, canvas pixels {whites} (both must stay below the picture gates)"
+
+    quality("html/bars/grid-tables stay searchable text, not pictures", text_check, p("notart.png"))
+
     live = p("live.md")
     open(live, "w").write("# one\n")
     def edit():
