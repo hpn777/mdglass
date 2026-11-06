@@ -515,11 +515,12 @@ struct App {
     rescroll_left: u8,
     rescroll_upper: f64,
     pending_top: Option<(usize, i32)>,
-    /// raw engine SVG per diagram block, keyed by (info string, source):
-    /// theme-independent, so a light/dark flip never re-runs an engine nor
-    /// respawns the CLI. None = failed, also cached, so a broken block never
-    /// re-runs the engine on every frame. Cleared when another document loads.
-    svg_cache: HashMap<(String, String), Option<String>>,
+    /// raw engine SVG per diagram block, keyed by (info string, source,
+    /// dark): mermaid bakes its palette in, so the theme is part of the key.
+    /// aasvg output is theme-independent but keyed the same way. None =
+    /// failed, also cached, so a broken block never re-runs the engine on
+    /// every frame. Cleared when another document loads.
+    svg_cache: HashMap<(String, String, bool), Option<String>>,
     /// decoded picture per (info string, source, dark) at the zoom it was
     /// made for; re-emits at the same zoom (scroll, resize, live reload)
     /// reuse it without touching librsvg again. Each entry holds one
@@ -528,7 +529,7 @@ struct App {
     /// keys the current emit actually used; the caches shrink to these at
     /// the end of every render, so live reloads cannot pile up revisions
     /// forever (they re-render with keep = true and would never clear)
-    used_svg: HashSet<(String, String)>,
+    used_svg: HashSet<(String, String, bool)>,
     used_raster: HashSet<(String, String, bool)>,
     /// the current document shows at least one picture (a theme flip must
     /// re-emit those: palettes are baked into the SVG at render time)
@@ -1179,13 +1180,13 @@ unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
     }
     let src = lines.join("\n");
     let dark = (l().adw_style_manager_get_dark)((l().adw_style_manager_get_default)()) != 0;
-    let key = (lang.to_string(), src.clone());
+    let key = (lang.to_string(), src.clone(), dark);
     let raw = match (*app()).svg_cache.get(&key) {
         Some(hit) => hit.clone(),
         None => {
-            let built = vector::engine_svg(lang, &src).or_else(|| {
+            let built = vector::engine_svg(lang, &src, dark).or_else(|| {
                 // built-in mmdr is 0.3.x; an installed newer CLI gets a vote
-                if vector::is_mermaid(lang) { vector::mermaid_via_cli(&src) } else { None }
+                if vector::is_mermaid(lang) { vector::mermaid_via_cli(&src, dark) } else { None }
             });
             (*app()).svg_cache.insert(key.clone(), built.clone());
             built
@@ -1195,7 +1196,7 @@ unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
     let Some(raw) = raw else { return std::ptr::null_mut() };
     let Some(svg) = vector::apply_theme(lang, &raw, dark) else { return std::ptr::null_mut() };
     let zoom = (*app()).zoom;
-    let rkey = (key.0.clone(), key.1.clone(), dark);
+    let rkey = key; // raster keys carry the same theme bit
     (*app()).used_raster.insert(rkey.clone());
     if let Some((z, pb)) = (*app()).raster_cache.get(&rkey) {
         if (z - zoom).abs() < 0.005 {

@@ -149,12 +149,16 @@ when guessed wrong) shape it:
 The texture's `GBytes` is built with `g_bytes_new_with_free_func` carrying a
 reference to the source pixbuf, so the pixels stay alive exactly as long as
 the texture reads them. Caching is two-tier: raw engine SVG (and failures)
-per document keyed by (info string, source) — theme-independent, so a
-light/dark flip never re-runs an engine nor respawns the CLI — and decoded
-pixbufs per (source, theme) at the zoom they were made for, so scrolling,
-live reload and resize touch neither engine nor librsvg, while zoom gets a
-fresh librsvg render at the target size (crisp vectors, never an upscale).
-Both caches prune to the keys the current emit used, because live reload
-re-renders with the cache-retaining flag and would otherwise accumulate
-every saved revision. Zoom clamp: one uniform factor across both axes.
+per document keyed by (info string, source, dark) and decoded pixbufs per
+the same triple at the zoom they were made for, so scrolling, live reload
+and resize touch neither engine nor librsvg, while zoom gets a fresh librsvg
+render at the target size (crisp vectors, never an upscale). The `dark` bit
+is in the SVG key because mermaid bakes its palette in: `Theme::modern()`
+paints a white canvas, `Theme::dark()` a `#333333` one, so the diagrams
+follow the system light/dark setting; the `mmdr` CLI gets `-t modern|dark`
+to match. aasvg output is theme-independent (it carries `var()` colors that
+`svg_theme` resolves later) but keys the same way. Both caches prune to the
+keys the current emit used, because live reload re-renders with the
+cache-retaining flag and would otherwise accumulate every saved revision.
+Zoom clamp: one uniform factor across both axes.
 Terminal output is unchanged: pictures are a window-only enhancement.

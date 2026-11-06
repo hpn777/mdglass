@@ -438,25 +438,67 @@ fn main() {}
     check("diagram session has no GTK warnings", not gtk_noise(err),
           "\n     ".join(gtk_noise(err)[:5]))
 
-    def dgr_check(path):
-        img = pngread.open(path)
+    def runs_of(img, pred, min_run=24):
+        # pixels inside horizontal same-color runs >= min_run: filled
+        # rectangles (a picture's canvas) qualify, text antialiasing does not
+        n = 0
+        for y in range(56, img.h, 2):
+            run = 0
+            for x in range(20, img.w - 16):
+                if pred(img.rgb(x, y)[:3]):
+                    run += 1
+                else:
+                    if run >= min_run:
+                        n += run
+                    run = 0
+            if run >= min_run:
+                n += run
+        return n
+
+    def longest_rule(img):
         best = 0
         for y in range(56, img.h):
             xs = lit_xs(img, y, 20, img.w - 16)
             if xs:
                 best = max(best, longest_run(xs)[0])
-        # the mermaid canvas (white on the dark page) cannot come from text:
-        # a text-only build of the same document sampled ~1000
-        whites = sum(1 for y in range(56, img.h, 2) for x in range(20, img.w - 16, 2)
-                     if all(c > 235 for c in img.rgb(x, y)[:3]))
-        # aasvg and mermaid rules are single solid strokes; the longest run
-        # of adjacent text pixels in the same document was 99 (box glyphs)
-        ok = best >= 400 and whites >= 8000
-        return ok, f"longest vector rule {best}px, mermaid canvas pixels {whites}"
+        return best
+
+    DARK_CANVAS = lambda c: all(abs(v - 0x33) <= 8 for v in c)   # Theme::dark() field
+    LIGHT_CANVAS = lambda c: all(v > 235 for v in c)             # light field
+
+    def dgr_check(path, dark=True):
+        img = pngread.open(path)
+        # the mermaid canvas follows the style: #333333 on a dark page,
+        # #FFFFFF on a light one. The OTHER color on screen means a stale
+        # palette; a text-only build shows neither
+        want = runs_of(img, DARK_CANVAS if dark else LIGHT_CANVAS)
+        stale = runs_of(img, LIGHT_CANVAS if dark else DARK_CANVAS)
+        best = longest_rule(img)
+        ok = best >= 400 and want >= 8000 and stale < 2000
+        return ok, f"longest vector rule {best}px, themed canvas {want}px, stale-palette canvas {stale}px"
 
     quality("code blocks became vector pictures (solid rules, mermaid canvas)", dgr_check, p("dgr1.png"))
     quality("pictures survive a full re-render of the document", dgr_check, p("dgr2.png"))
     quality("pictures stay vector after zooming", dgr_check, p("dgr3.png"))
+
+    # the palette must follow the style switch, not ride along from before:
+    # same document, light style, dark field forbidden. The light window is
+    # itself near-white, so there is no positive canvas count to demand:
+    # the vector rule (text-only build of this document: 73px) and the
+    # absent dark field carry the proof.
+    rc, err = run([p("dgr.md")], f"shot:{p('dgr_light.png')};quit", scheme="prefer-light", timeout=60)
+    check("light diagram session exits cleanly", rc == 0, f"exit {rc}\n{err[-400:]}")
+    check("light diagram session has no GTK warnings", not gtk_noise(err),
+          "\n     ".join(gtk_noise(err)[:5]))
+
+    def dgr_light_check(path):
+        img = pngread.open(path)
+        dark_field = runs_of(img, DARK_CANVAS)
+        best = longest_rule(img)
+        ok = dark_field < 1000 and best >= 120
+        return ok, f"dark canvas pixels {dark_field} (must be ~none), longest vector rule {best}px"
+
+    quality("light style gets a light mermaid palette, still vector", dgr_light_check, p("dgr_light.png"))
 
     # the near-misses must stay text: HTML, progress bars and grid tables
     # would lose their searchable, copyable content to a picture
@@ -470,17 +512,14 @@ fn main() {}
 
     def text_check(path):
         img = pngread.open(path)
-        best = 0
-        for y in range(56, img.h):
-            xs = lit_xs(img, y, 20, img.w - 16)
-            if xs:
-                best = max(best, longest_run(xs)[0])
-        whites = sum(1 for y in range(56, img.h, 2) for x in range(20, img.w - 16, 2)
-                     if all(c > 235 for c in img.rgb(x, y)[:3]))
-        # a vectorized block would show the >=400px rule and >=8000 canvas
-        # pixels dgr_check demands; the gate must have refused all of them
-        ok = best < 400 and whites < 8000
-        return ok, f"longest run {best}px, canvas pixels {whites} (both must stay below the picture gates)"
+        best = longest_rule(img)
+        # a vectorized block in either palette would show the >=400px rule
+        # and >=8000px canvas dgr_check demands; the gate must have refused
+        # all of them, in the theme it renders (dark field here, no stale
+        # white card either)
+        fields = runs_of(img, DARK_CANVAS) + runs_of(img, LIGHT_CANVAS)
+        ok = best < 400 and fields < 2000
+        return ok, f"longest run {best}px, canvas-field pixels {fields} (both must stay below the picture gates)"
 
     quality("html/bars/grid-tables stay searchable text, not pictures", text_check, p("notart.png"))
 

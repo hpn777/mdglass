@@ -163,14 +163,26 @@ pub fn svg_theme(svg: &str, dark: bool) -> Option<String> {
 }
 
 /// Raw SVG from the engine named by `lang`, or None to keep the block as
-/// text. Theme-independent, so a light/dark flip never re-runs an engine.
-pub fn engine_svg(lang: &str, text: &str) -> Option<String> {
+/// text. Mermaid bakes its palette into the SVG (a dark preset exists and
+/// the theme affects layout-relevant colors), so its output is keyed by
+/// theme; aasvg emits `var()` colors and stays theme-independent until
+/// `apply_theme`. None is cached too, so a broken block never re-runs an
+/// engine on every frame.
+pub fn engine_svg(lang: &str, text: &str, dark: bool) -> Option<String> {
     if !fits(text) {
         return None;
     }
     if is_mermaid(lang) {
         let text = text.to_string();
-        let built = catch_unwind(move || mermaid_rs_renderer::render(&text)).ok()?;
+        let built = catch_unwind(move || {
+            // modern (light) is the crate default look; Theme::dark() paints
+            // the #333333 canvas mermaid users expect in dark mode
+            let theme =
+                if dark { mermaid_rs_renderer::Theme::dark() } else { mermaid_rs_renderer::Theme::modern() };
+            let opts = mermaid_rs_renderer::RenderOptions { theme, ..Default::default() };
+            mermaid_rs_renderer::render_with_options(&text, opts)
+        })
+        .ok()?;
         return built.ok();
     }
     if !art_lang(lang) {
@@ -184,8 +196,8 @@ pub fn engine_svg(lang: &str, text: &str) -> Option<String> {
     catch_unwind(move || aasvg::render(&ascii)).ok()
 }
 
-/// Engine output themed for the current style; mermaid SVGs carry their own
-/// (light) palette and pass through, like embedded images do.
+/// Engine output themed for the current style; mermaid SVGs already carry
+/// the palette rendered for that style and pass through, like images do.
 pub fn apply_theme(lang: &str, raw: &str, dark: bool) -> Option<String> {
     if is_mermaid(lang) {
         return Some(raw.to_string());
@@ -194,15 +206,16 @@ pub fn apply_theme(lang: &str, raw: &str, dark: bool) -> Option<String> {
 }
 
 /// Second-chance Mermaid through an installed `mmdr` CLI, when the built-in
-/// renderer (0.3.x, still growing) cannot parse the diagram.
-pub fn mermaid_via_cli(text: &str) -> Option<String> {
+/// renderer (0.3.x, still growing) cannot parse the diagram. The `-t` preset
+/// keeps the fallback's palette in step with the built-in one.
+pub fn mermaid_via_cli(text: &str, dark: bool) -> Option<String> {
     use std::io::Write;
     use std::process::{Command, Stdio};
     if !fits(text) {
         return None;
     }
     let mut child = Command::new("mmdr")
-        .args(["-e", "svg"])
+        .args(["-e", "svg", "-t", if dark { "dark" } else { "modern" }])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -278,8 +291,11 @@ mod tests {
     #[test]
     fn aasvg_vectors_the_art_and_theme_pins_colors() {
         let art = "+------+\n| db   |----> out\n+------+\n";
-        let raw = engine_svg("", art, ).expect("art renders");
+        let raw = engine_svg("", art, false).expect("art renders");
         assert!(raw.contains("<style>"), "engine emits the themed shape");
+        // aasvg raw output carries var() colors, so it does not depend on
+        // the theme; only mermaid's baked palette does
+        assert_eq!(engine_svg("", art, true), Some(raw.clone()), "aasvg raw is theme-independent");
         let svg = apply_theme("", &raw, true).expect("theme applies");
         assert!(svg.contains("<path"), "expected vector paths");
         assert!(svg.contains("stroke=\"#9a999d\""), "dark stroke pinned");
@@ -290,20 +306,25 @@ mod tests {
         // a differently shaped engine output must fail closed
         assert_eq!(apply_theme("", "<svg>changed shape</svg>", true), None);
         // typed blocks stay code even when they draw boxes
-        assert!(engine_svg("rust", art).is_none());
-        assert!(engine_svg("text", art).is_some());
+        assert!(engine_svg("rust", art, false).is_none());
+        assert!(engine_svg("text", art, false).is_some());
     }
 
     #[test]
     fn mermaid_renders_and_garbage_fails_soft() {
-        let svg = engine_svg("mermaid", "flowchart LR; A-->B").expect("tiny flowchart");
+        let svg = engine_svg("mermaid", "flowchart LR; A-->B", false).expect("tiny flowchart");
         assert!(svg.contains("<svg"));
-        assert_eq!(apply_theme("mermaid", &svg, true).unwrap(), svg); // own palette
+        assert!(svg.contains("#FFFFFF"), "light style gets the light canvas");
+        let dark = engine_svg("mermaid", "flowchart LR; A-->B", true).expect("dark renders");
+        assert!(dark.contains("#333333"), "dark style gets the #333333 canvas");
+        assert!(!dark.contains("#FFFFFF"), "no light canvas leaks into dark mode");
+        assert_ne!(svg, dark, "the palette follows the style");
+        assert_eq!(apply_theme("mermaid", &dark, true).unwrap(), dark); // own palette
         // mmdr is forgiving, but rejects a document with no diagram header
-        assert!(engine_svg("mermaid", "this is not mermaid at all").is_none());
+        assert!(engine_svg("mermaid", "this is not mermaid at all", false).is_none());
         // oversized input stays text instead of hanging the UI thread
-        assert!(engine_svg("mermaid", &"flowchart LR\n".repeat(30_000)).is_none());
-        assert!(mermaid_via_cli(&"x".repeat(300_000)).is_none());
+        assert!(engine_svg("mermaid", &"flowchart LR\n".repeat(30_000), false).is_none());
+        assert!(mermaid_via_cli(&"x".repeat(300_000), false).is_none());
     }
 
     #[test]
@@ -332,20 +353,23 @@ mod tests {
         // box art and unicode art vectorize, themed for either style
         for i in 0..2 {
             assert_eq!(fences[i].0, ["", "text"][i], "block {i} info string");
-            let raw = engine_svg(&fences[i].0, &fences[i].1).unwrap_or_else(|| panic!("art block {i} must render"));
+            let raw = engine_svg(&fences[i].0, &fences[i].1, false).unwrap_or_else(|| panic!("art block {i} must render"));
             assert!(raw.contains("<path"), "block {i} has vector paths");
             for dark in [true, false] {
                 assert!(apply_theme(&fences[i].0, &raw, dark).is_some(), "block {i} themes");
             }
         }
-        // the three mermaid diagrams parse with the built-in engine
+        // the three mermaid diagrams parse with the built-in engine, in
+        // both palettes
         for i in 2..5 {
             assert_eq!(fences[i].0, "mermaid", "block {i} info string");
-            assert!(engine_svg("mermaid", &fences[i].1).is_some(), "mermaid block {i} must render");
+            for dark in [true, false] {
+                assert!(engine_svg("mermaid", &fences[i].1, dark).is_some(), "mermaid block {i} must render (dark={dark})");
+            }
         }
         // the grid table is the deliberate rejection: it stays searchable text
         assert_eq!(fences[5].0, "");
-        assert!(engine_svg("", &fences[5].1).is_none(), "the data table must stay text");
+        assert!(engine_svg("", &fences[5].1, false).is_none(), "the data table must stay text");
     }
 
     #[test]

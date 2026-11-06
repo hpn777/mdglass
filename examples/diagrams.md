@@ -1,9 +1,9 @@
 # Diagrams, drawn as vectors
 
 The GNOME window (`mdglass --gui`) renders the blocks below as real vector
-pictures; the terminal renders this same file as plain code. Zooming
-(`Ctrl++`) re-renders them sharp, and any block the recognizers reject
-stays searchable code text.
+pictures in a palette that follows your light/dark setting; the terminal
+renders this same file as plain code. Zooming (`Ctrl++`) re-renders them
+sharp, and any block the recognizers reject stays searchable code text.
 
 ## Box art
 

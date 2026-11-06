@@ -39,7 +39,8 @@ Prose wraps to the window; wide tables and diagrams keep their shape and scroll 
 Those wraps are real line breaks, as in the terminal: find does not match a phrase split
 across two lines, copied text keeps the breaks, and resizing or zooming clears a selection.
 In the window, ```` ```mermaid ```` blocks and untyped box-art blocks are drawn as vector
-graphics (terminal output stays text); any block that cannot be drawn stays a code block.
+graphics in a palette that follows your light/dark setting (terminal output stays text);
+any block that cannot be drawn stays a code block.
 `examples/diagrams.md` demos every kind, with `examples/screenshots/` as proof.
 
 See `man mdglass` for all options.
