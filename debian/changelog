@@ -1,3 +1,12 @@
+mdglass (0.1.0-5) unstable; urgency=medium
+
+  * The window draws ```mermaid blocks and untyped box-art blocks as vector
+    pictures (aasvg + mermaid-rs-renderer in-process, an installed mmdr CLI
+    as second opinion); anything that cannot be drawn stays a code block.
+    Terminal output is unchanged.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Fri, 06 Nov 2026 14:22:36 +0000
+
 mdglass (0.1.0-4) unstable; urgency=medium
 
   * GNOME preview: tables and diagrams keep their shape (pixel-exact columns
