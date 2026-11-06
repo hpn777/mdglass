@@ -1,6 +1,7 @@
 // mdglass - super fast terminal markdown viewer.
 
 mod ansi;
+mod boxart;
 mod doc;
 mod gui;
 mod pager;

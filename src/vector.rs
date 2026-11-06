@@ -22,7 +22,7 @@ pub fn art_lang(lang: &str) -> bool {
 /// Engines are forgiving but not infinite: layout time and parser recursion
 /// grow with the input, run on the UI thread, and a deep enough recursion is
 /// a SIGSEGV that catch_unwind cannot catch. Oversized blocks stay text.
-fn fits(text: &str) -> bool {
+pub(crate) fn fits(text: &str) -> bool {
     text.len() <= 200_000 && text.lines().count() <= 2000
 }
 

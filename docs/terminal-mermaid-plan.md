@@ -1,0 +1,204 @@
+# Mermaid diagrams in the terminal (plan v2)
+
+v2 — revised after the Opus 5.5 review of v1 (verdict: approve-with-changes).
+Load-bearing corrections: layout cost is NOT a few ms (measured), labels are
+multi-line `TextBlock`s, edges are not "near-orthogonal", the flag must be
+plumbed through the pager (not defaulted in `Cfg::new`), and piping must keep
+source. All adopted below.
+
+Goal: the pager draws fenced `mermaid` blocks as ASCII/Unicode box art, so a
+diagram reads in any terminal — no graphics protocol, no new dependency.
+**Size claim verified by review: single binary, `mod gui`/`mod vector`
+unconditional, mermaid-rs-renderer an unconditional Cargo dependency already
+linked under LTO — the ASCII engine adds only its own drawing code.**
+Non-goals: faithful typography, sixel/kitty passthrough (deferred).
+
+Principle carried over: terminal output stays text. Box-art keeps node and
+edge labels as real characters — find (`/`) and copy work on what the diagram
+*says*. The mermaid source stops being searchable by keywords; that is the
+trade, covered by a pager toggle key (P2) and `--no-diagrams` — not by a flag
+users must know before first run.
+
+## Evidence base
+
+- `mmdr --dumpLayout`: nodes as `{x, y, width, height}` + `label: TextBlock`
+  (x,y = top-left), edges as point polylines + `label_anchor` + arrow flags,
+  subgraph boxes; layout is deterministic across runs (BTreeMap, verified
+  identical md5 over 6 runs).
+- **Cost, measured (`mmdr --fastText`, release):** 3-node LR 0.01 s; 6-node
+  TD + subgraph 0.12 s; 40 edges 0.27 s; cold system-font scan ≈ +0.11 s and
+  a ~760 KB copy under `$XDG_CACHE_HOME/mmdr/font-cache/`. The pager re-renders
+  every file on every width change seen by its 15 ms resize poll
+  (`pager.rs:367-373`), so layout MUST be memoized (Design → Cache).
+- Diagonals are real: a TD fan-out produced a 51×103 px diagonal edge (≈13
+  staircase rows), and two edges ran shared segments *along a node's border*
+  (`b.mmd` probe). The quality gate (below) is therefore part of the design,
+  not an aspiration; P0 must test fan-in/fan-out, a back edge, a self-loop,
+  a multi-edge, a subgraph, and an edge into a subgraph — not just the
+  3-node example.
+- `fast_text_metrics: true` makes ASCII label widths exactly
+  `chars × 0.56 × font_size` px (`text.rs:69-71` guard): at `font_size = 16`
+  (8.96 px/char) and 8 px/cols, an ASCII label *always* fits its box with no
+  compression — and fontdb is never touched for ASCII (no scan, no cache
+  write, no host-font dependence in tests). Non-ASCII labels still reach
+  fontdb: accepted, documented.
+
+## Approach
+
+**Chosen: layout-native ASCII.** `parse_mermaid_strict` + `compute_layout`
+in-process (the same validator-gated parse the GUI runs, so the terminal never
+draws input the GUI would reject), then draw the geometry into a char grid.
+
+Rejected: rasterize-then-braille (labels mush, kills find/copy), sixel/kitty
+(deferred). Review dropped v1's "rank-based connector" fallback: a second
+engine for a view the GUI already draws faithfully — if the quality gate
+fails, return `None` and show the source, full stop.
+
+Fallback ladder: gate reject / engine failure / gate fail → today's code
+block. Never worse than now.
+
+## Design
+
+### Engine: new `src/boxart.rs` (pure, no GTK); `vector.rs` keeps SVG duties
+
+- `pub fn terminal_ascii(text: &str, max_cols: usize, plain: bool) -> Option<Vec<String>>`
+- Input capped by `vector::fits()`; engine runs `catch_unwind` behind a
+  once-installed *filtering* panic hook (≈244 unwrap/index sites in upstream
+  parser + layout; the default hook's panic text corrupts the pager's
+  alternate screen even when caught; a per-call global swap would race other
+  threads, so one `Once` hook consults a thread-local quiet flag).
+- Gate: `kind == DiagramKind::Flowchart` and `DiagramData::Graph` (direction
+  comes from `Graph.direction`, and is *not* a gate — the enum has exactly
+  the four values). `DiagramData::Error` and every other kind → None.
+- `LayoutConfig { fast_text_metrics: true, .. }` + fixed `Theme` font_size 16.
+- **Uniform scale only** (8 px/col, 16 px/row). Too wide → one retry with a
+  compact `LayoutConfig` (smaller `node_padding_x`/`node_spacing`/`rank_spacing`)
+  — geometry stays consistent because the engine, not the canvas, moves the
+  boxes. Still too wide → None. v1's per-column x-compression is dead: it
+  would have to remap every polyline and label anchor — a label-eating,
+  edge-collision factory.
+- Multi-line labels: `TextBlock.lines` drawn as centered rows; measure columns
+  with `ansi::char_width` (CJK = exactly 2 cols at these metrics — keep the
+  fit check). Never ellipsize (see gate).
+
+### Layout cache (P1 requirement, not optimization)
+
+The layout does not depend on width; only rasterization does. Memoize
+`Option<Layout>` (failures included — they are the hot path for garbage) in a
+`thread_local!` keyed by the block text. A drag-resize then re-rasterizes at
+~0 cost instead of 100–300 ms per diagram per poll.
+
+### Canvas and drawing order (z bottom-up)
+
+1. Subgraph frames (`┌ ─ ┐ │ └ ┘` + label); inner content wins overlaps.
+2. Edges: polylines rasterized to cells; diagonal stretches become staircases;
+   glyph per cell from its in/out bit mask (`─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼`); arrowheads
+   by final segment direction, `► ◄ ▲ ▼` (color) / `> v < ^` (plain) —
+   one column under `char_width` (ambiguous-width precedent: fences/tables
+   already ship `─ ╭`). Circle/cross endpoints come from
+   `start_decoration`/`end_decoration` (`EdgeDecoration::{Circle,Cross}`);
+   `arrow_*_kind` is `OpenTriangle`/`ClassDependency` only. Edge endpoints
+   land ON node borders — the arrow cell goes one cell outside, the border
+   keeps its glyph (write-mask rule, not last-writer-wins).
+3. Node boxes: erase interior, draw border, center `TextBlock.lines`. Shapes
+   map to conventions, not curves: RoundRect/Stadium → `(`…`)`, Diamond →
+   plain box (or `<`…`>` if room), Cylinder → `|‾‾‾|`/`|_|`, else box.
+   Skip `NodeLayout.hidden`.
+4. Edge labels: blank a window at `label_anchor`; overlap keeps the first
+   (deterministic).
+
+### Quality gate (concrete reject list — any hit → None → source)
+
+- any label that does not fit its box at full width (refuse, never ellipsize:
+  eaten text breaks find),
+- uniform scale below ~6 px/col, or still wider than `max_cols` after the
+  one compact re-layout,
+- an edge cell landing on any node border/interior except its own endpoint
+  cells,
+- an edge running along a border (the `b.mmd` pattern), or two edges sharing
+  more than a small number of cells,
+- an edge label with no free window,
+- two visible node boxes overlapping after rounding to cells,
+- non-flowchart kind or `DiagramData::Error`.
+
+### Phase-1 implementation notes (locked by review #1; phase 2 builds on this)
+
+- `parse_mermaid_strict` (crate root; preflight validator), flowchart +
+  `DiagramData::Graph` gate, pre-layout caps 40 nodes / 60 edges.
+- Spacing variants: default; **compact** only when the default is too wide;
+  **roomy** (spacing 80) only as the retry a `Fail::Retry` gate asks for —
+  roomy never follows a width failure (it is wider than default). Cache:
+  `(source -> [tried/got; 3])`, values `Rc<Layout>`, refusals memoized too.
+- Geometry is never moved: box rects are the rounded layout rects; ranks
+  that fuse at cell scale refuse (the tried settle-nudge pass produced a
+  membership lie and was deleted).
+- Frames round **inward** (ceil/floor). A node rect touching or spanning a
+  frame line refuses. Riding **on** a frame line refuses (`frame_riders`:
+  parallel step runs > 2 per line, perpendicular/staircase crossings touch
+  ≤ 2 and pass); riding a corridor one cell off a box or frame is faithful
+  (SVG shows the same) and is deliberately not gated.
+- Arrowheads: last/first route cell outside the endpoint rects, glyph aims
+  at the endpoint box (4-neighbour inside it), must share a role if stamped
+  on another line; a route through a foreign head refuses.
+- Cross-edge contacts: same-role endpoints converge freely; unconnected
+  routes may only cross as two straight lines (┼); stacking > 6 cells
+  outside all endpoint rects refuses. Cells shared by two routes take edge
+  id -2 and no edge label may blank them.
+- Every node label, edge label and subgraph title is re-read from the grid
+  before emit; anything eaten refuses. Labels with control/zero-width chars
+  refuse. `ok`, `x`, `◇`, `◆` decorations draw; crow's-foot refuses.
+- Lossy trade, documented: thick/dotted edges all draw solid. Hidden-anchor
+  edges refuse (P1.5). `%%{init}%%` theming is not followed (source parity
+  is the artifact).
+
+### Terminal integration (`render.rs`, `pager.rs`, `main.rs`)
+
+- Art renders when it will be *read*: interactive pager, or `-n` on a TTY /
+  `--color` forced. **Piped without `--color` keeps the source** — plain mode
+  reproduces markdown (`fence_top` emits ```` ```mermaid ````); art inside
+  that fence would be invalid mermaid and would break
+  `mdglass -n doc.md | grep -- '-->'`.
+- Flag `--no-diagrams` (matches `--no-urls`/`--no-pager`, generalizes to
+  sequence/pie later). Explicitly plumbed: `main.rs` → `Pager::new`/`pager::run`
+  AND `print_plain` — pager.rs:113 builds its own `Cfg::new`, so a default-
+  true field in `Cfg::new` would silently ignore the flag and change every
+  fixture in `render/tests.rs` unnoticed.
+- Hook: the `Line::Code` arm of `render_lines` (quotes recurse at width−2 →
+  art narrows automatically; GUI never calls `render_lines`). Caption: reuse
+  the existing `fence_top(cfg, "mermaid")`/`fence_bottom` chrome — no third
+  frame style; it also keeps one searchable `mermaid` keyword on screen.
+- Pager toggle key (P2): flip diagrams on/off for the session and re-render
+  (art ⇄ source); test it in the pty smoke.
+- Resize: nothing to add — `Pager::resize` re-renders; the cache makes it cheap.
+
+## Phases and gates
+
+- **P0 feasibility**: prototype raster with the full test set: 3-node LR,
+  TD fan-out/fan-in, back edge, self-loop, multi-edge, subgraph frame, edge
+  into a subgraph, `b.mmd` border-runner. Gate = readable, gate rejects
+  exactly the dirty cases. Kill criterion: if clean flowcharts also fall to
+  the gate more than rarely, stop and keep SVG the only diagram path.
+- **P1 engine**: `boxart.rs` + cache + strict parse + panic hook + gate;
+  unit tests assert *invariants* (width ≤ max_cols, every non-wrapped label
+  substring present, determinism, gate rejects the dirty set, plain mode has
+  no box glyphs, `fast_text_metrics` leaves no font-cache dir), never exact
+  art. Pin the crate version; no golden snapshots.
+- **P2 integration**: `--no-diagrams` plumbed everywhere, pager toggle key,
+  pty smoke: box glyphs for the diagram doc, find hits a node label, broken
+  mermaid stays code, piped output stays source, toggle key shows source.
+  Update the expectations in `examples/diagrams.md`, README and metainfo that
+  today say "terminal output stays text [as code]" — still text, now drawn.
+  changelog +0 size re-verified.
+- **P3 (decide after P2)**: sequence via `DiagramData::Sequence` (its own
+  drawing path — separate risk bucket); state/ER if they present as
+  nodes+edges; dim-border color pass; pie as an aligned percentage list.
+
+## Questions — resolved by review
+
+1. Default-on in the pager/TTY, source when piped; plus a session toggle key
+   (better answer to the find/copy worry than a CLI flag).
+2. No rank-based fallback; gate fail → source.
+3. Sequence stays P3.
+4. Reuse fence chrome, not a new frame.
+5. `--no-diagrams`.
+6. Refuse instead of degrade: the concrete gate list above.

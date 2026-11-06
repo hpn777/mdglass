@@ -11,7 +11,7 @@ termion = "4"
 # GUI diagram engines (docs/diagram-engine-options.md): ASCII art -> vector SVG,
 # and a native Mermaid renderer. Both are pure Rust, both fail soft.
 aasvg = "1"
-mermaid-rs-renderer = { version = "0.3", default-features = false }
+mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
 
 [profile.dev.package.mermaid-rs-renderer]
 opt-level = 1  # its debug build is very slow to parse
