@@ -16,6 +16,7 @@
     <ul>
       <li>Find in document with match count</li>
       <li>Zoom, and several files open at once</li>
+      <li>Mermaid and box-art code blocks drawn as vector graphics</li>
       <li>Live reload when the file changes on disk</li>
       <li>A terminal pager mode with the same renderer</li>
     </ul>
