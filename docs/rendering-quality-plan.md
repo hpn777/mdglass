@@ -1,6 +1,6 @@
 # Desktop rendering quality: grids (tables) and diagrams (ASCII art)
 
-Status: v2, revised after independent review. Scope: `--gui` back end
+Status: implemented (Phases 0-3 landed; numeric pixel checks in make check). Scope: `--gui` back end
 (`src/gui.rs`), shared logic in `src/doc.rs` / `src/ansi.rs`, plus
 `tests/gui_abi_audit.py` and `tests/gui_smoke.py`. The terminal back end is
 the fidelity reference.
