@@ -111,6 +111,13 @@ Shipped shape: `src/vector.rs` (pure recognition/SVG) + the GUI render path
 (`picture_for`/`emit_picture` in `src/gui.rs`). Step 2 survives as the CLI
 second chance: built-in mmdr renders, and only when it fails an installed
 `mmdr` CLI is tried (`mermaid_via_cli`); anything else stays a code block.
+The CLI runs on the UI thread, so a wedged one must not wedge the window: a
+5 s deadline kills it (and does not wait for the stdout drainer, which a
+grandchild could hold open), stdout is capped at 8 MB, and a nonzero exit
+retries once without `-t` so a CLI predating that flag still draws (wrong
+palette beats text). One asymmetry: a `%%{init: {theme}}%%` directive
+overrides `-t` in the CLI but is ignored in-process, so the same diagram can
+follow light/dark built-in yet not via the fallback.
 Step 3 took the crates.io `scene`-free route (0.3.1, SVG via librsvg); the
 git `scene` feature stays unshipped. Release profile switched to
 `panic = "unwind"` so both engines run inside `catch_unwind` — a parser
@@ -156,8 +163,9 @@ render at the target size (crisp vectors, never an upscale). The `dark` bit
 is in the SVG key because mermaid bakes its palette in: `Theme::modern()`
 paints a white canvas, `Theme::dark()` a `#333333` one, so the diagrams
 follow the system light/dark setting; the `mmdr` CLI gets `-t modern|dark`
-to match. aasvg output is theme-independent (it carries `var()` colors that
-`svg_theme` resolves later) but keys the same way. Both caches prune to the
+to match. aasvg output is theme-independent (its `var()` colors are resolved
+later by `svg_theme`), so its engine key carries a constant theme bit and a
+style flip re-runs only mermaid; the raster key always carries the real one. Both caches prune to the
 keys the current emit used, because live reload re-renders with the
 cache-retaining flag and would otherwise accumulate every saved revision.
 Zoom clamp: one uniform factor across both axes.

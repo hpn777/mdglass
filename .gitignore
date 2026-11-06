@@ -4,3 +4,4 @@
 /.flatpak-builder
 /repo
 __pycache__/
+*.log

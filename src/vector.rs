@@ -207,30 +207,120 @@ pub fn apply_theme(lang: &str, raw: &str, dark: bool) -> Option<String> {
 
 /// Second-chance Mermaid through an installed `mmdr` CLI, when the built-in
 /// renderer (0.3.x, still growing) cannot parse the diagram. The `-t` preset
-/// keeps the fallback's palette in step with the built-in one.
+/// keeps the fallback's palette in step with the built-in one; CLIs older
+/// than `-t` exit with an error, so the plain invocation is retried once
+/// (a wrong palette still beats text). This runs on the UI thread, so a
+/// wedged CLI must not wedge the window: a 5 s deadline kills it and stdout
+/// is capped at 8 MB.
 pub fn mermaid_via_cli(text: &str, dark: bool) -> Option<String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
     if !fits(text) {
         return None;
     }
-    let mut child = Command::new("mmdr")
-        .args(["-e", "svg", "-t", if dark { "dark" } else { "modern" }])
+    let theme = if dark { "dark" } else { "modern" };
+    let mut attempt = mmdr_once(text, Some(theme), CLI_DEADLINE);
+    if matches!(attempt, Attempt::StaleInvocation) {
+        attempt = mmdr_once(text, None, CLI_DEADLINE);
+    }
+    match attempt {
+        Attempt::Picture(svg) => Some(svg),
+        _ => None,
+    }
+}
+
+const CLI_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+const CLI_MAX_OUT: usize = 8 * 1024 * 1024;
+
+enum Attempt {
+    Picture(String), // usable SVG
+    Useless,         // CLI ran and answered: no picture, do not ask twice
+    StaleInvocation, // nonzero exit: maybe a CLI that lacks `-t`
+    Dead,            // absent, hung, or broken: never retry on this path
+}
+
+fn mmdr_once(text: &str, theme: Option<&str>, deadline: std::time::Duration) -> Attempt {
+    use std::io::Read;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut args: Vec<&str> = vec!["-e", "svg"];
+    if let Some(t) = theme {
+        args.extend(["-t", t]);
+    }
+    let mut child = match Command::new("mmdr")
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .ok()?;
-    // close stdin even when the write fails, and always reap the child:
-    // an early return here used to leak a zombie next to a blocked mmdr
+    {
+        Ok(c) => c,
+        Err(_) => return Attempt::Dead,
+    };
+    // close stdin even when the write fails
     if let Some(mut si) = child.stdin.take() {
         let _ = si.write_all(text.as_bytes());
     }
-    let out = child.wait_with_output().ok()?;
-    if out.status.success() && out.stdout.windows(5).any(|w| w == b"<svg ") {
-        String::from_utf8(out.stdout).ok()
+    // drain stdout on a helper thread: a child writing more than a pipe
+    // buffer deadlocks against a parent that only waits. The thread posts
+    // over a channel so the UI thread can cap how long it waits for the
+    // last pipe writer to close, even after mmdr itself has exited.
+    let mut out = match child.stdout.take() {
+        Some(o) => o,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Attempt::Dead;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1 << 16];
+        while let Ok(n) = out.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            if buf.len() < CLI_MAX_OUT {
+                buf.extend_from_slice(&chunk[..n]);
+            }
+        }
+        let _ = tx.send(buf);
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) => {
+                if started.elapsed() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // no wait for the reader here either: a grandchild (a
+                    // wrapper script that spawned something) can hold the
+                    // pipe's write end open long after mmdr dies - the
+                    // detached thread unwinds when the last writer closes
+                    return Attempt::Dead;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Attempt::Dead;
+            }
+        }
+    };
+    // exited child closed the pipe, so the reader is already done; a hung
+    // grandchild inheriting it is capped here instead of freezing the UI
+    let stdout = rx.recv_timeout(std::time::Duration::from_millis(250)).unwrap_or_default();
+    if !status.success() {
+        return Attempt::StaleInvocation;
+    }
+    if stdout.windows(5).any(|w| w == b"<svg ") {
+        match String::from_utf8(stdout) {
+            Ok(svg) => Attempt::Picture(svg),
+            Err(_) => Attempt::Useless,
+        }
     } else {
-        None
+        Attempt::Useless
     }
 }
 
@@ -347,9 +437,6 @@ mod tests {
         }
         assert!(open.is_none(), "balanced fences");
         assert_eq!(fences.len(), 6, "six fenced blocks in the example");
-        for (i, lang) in [("", ""), ("text", "text")].iter().take(0) {
-            let _ = (i, lang); // (kept simple below)
-        }
         // box art and unicode art vectorize, themed for either style
         for i in 0..2 {
             assert_eq!(fences[i].0, ["", "text"][i], "block {i} info string");

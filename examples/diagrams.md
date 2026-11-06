@@ -26,7 +26,7 @@ The same engine after a one-line Unicode translation, so `╭─╮ │ ╰─�
 
 ```text
 ╭───────╮   upload   ╭───────╮
-│ Cache │<==========│  DB   │
+│ Cache │<===========│  DB   │
 ╰───────╯            ╰───────╯
 ```
 

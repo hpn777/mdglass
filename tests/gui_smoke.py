@@ -23,13 +23,15 @@ broadway = subprocess.Popen(["gtk4-broadwayd", DISPLAY], stdout=subprocess.DEVNU
 time.sleep(0.8)
 failures = 0
 
-def run(args, script, stdin=None, timeout=40, scheme=None):
+def run(args, script, stdin=None, timeout=40, scheme=None, env_extra=None):
     env = dict(os.environ, GDK_BACKEND="broadway", BROADWAY_DISPLAY=DISPLAY,
                MDGLASS_GUI_SCRIPT=script,
                # portals of the host session are not needed and may be slow
                ADW_DISABLE_PORTAL="1", GDK_DEBUG="no-portals")
     if scheme:  # pin light/dark so pixel checks do not depend on the host theme
         env["ADW_DEBUG_COLOR_SCHEME"] = scheme
+    if env_extra:
+        env.update(env_extra)
     p = subprocess.run([MDGLASS, "--gui", *args], env=env, input=stdin, capture_output=True,
                        timeout=timeout, cwd=work)
     return p.returncode, p.stderr.decode(errors="replace")
@@ -466,6 +468,18 @@ fn main() {}
     DARK_CANVAS = lambda c: all(abs(v - 0x33) <= 8 for v in c)   # Theme::dark() field
     LIGHT_CANVAS = lambda c: all(v > 235 for v in c)             # light field
 
+    # ink only the mermaid light palette paints: line_color #64748B (edges)
+    # and primary_border_color #94A3B8 (node borders). Neither appears in the
+    # Adwaita light UI nor in the aasvg box-art palette (#5e5c64/#222222), so
+    # these pixels can only come from a light mermaid picture.
+    MERMAID_INK = lambda c: (abs(c[0] - 0x64) <= 6 and abs(c[1] - 0x74) <= 6 and abs(c[2] - 0x8B) <= 6) or \
+                            (abs(c[0] - 0x94) <= 6 and abs(c[1] - 0xA3) <= 6 and abs(c[2] - 0xB8) <= 6)
+
+    def mermaid_ink(path, xlo=20):
+        img = pngread.open(path)
+        return sum(1 for y in range(56, img.h, 2) for x in range(xlo, img.w - 16, 2)
+                   if MERMAID_INK(img.rgb(x, y)[:3]))
+
     def dgr_check(path, dark=True):
         img = pngread.open(path)
         # the mermaid canvas follows the style: #333333 on a dark page,
@@ -481,24 +495,57 @@ fn main() {}
     quality("pictures survive a full re-render of the document", dgr_check, p("dgr2.png"))
     quality("pictures stay vector after zooming", dgr_check, p("dgr3.png"))
 
-    # the palette must follow the style switch, not ride along from before:
-    # same document, light style, dark field forbidden. The light window is
-    # itself near-white, so there is no positive canvas count to demand:
-    # the vector rule (text-only build of this document: 73px) and the
-    # absent dark field carry the proof.
-    rc, err = run([p("dgr.md")], f"shot:{p('dgr_light.png')};quit", scheme="prefer-light", timeout=60)
-    check("light diagram session exits cleanly", rc == 0, f"exit {rc}\n{err[-400:]}")
-    check("light diagram session has no GTK warnings", not gtk_noise(err),
+    # the palette must follow a LIVE style switch, not ride along from before.
+    # The gset: script step flips org.gnome.desktop.interface color-scheme in
+    # a GSETTINGS keyfile inside this suite's own workdir (never the user's
+    # settings), which is exactly how Adwaita learns its style on a real
+    # desktop. One process forces dark, shoots, forces light, shoots: the
+    # dark picture must carry the #333333 field and the light one must gain
+    # mermaid's light-palette ink (a fresh mermaid render, not just box art).
+    cfg = os.path.join(work, "cfg")
+    os.makedirs(cfg, exist_ok=True)
+    flip_env = {"GSETTINGS_BACKEND": "keyfile", "XDG_CONFIG_HOME": cfg}
+    rc, err = run([p("dgr.md")], ";".join([
+        "gset:prefer-dark", f"shot:{p('dgr_flip_dark.png')}",
+        "gset:prefer-light", f"shot:{p('dgr_flip_light.png')}", "quit"]),
+        env_extra=flip_env, timeout=60)
+    check("live-switch diagram session exits cleanly", rc == 0, f"exit {rc}\n{err[-400:]}")
+    check("live-switch diagram session has no GTK warnings", not gtk_noise(err),
           "\n     ".join(gtk_noise(err)[:5]))
 
-    def dgr_light_check(path):
+    def dgr_dark_path(path):
+        img = pngread.open(path)
+        want = runs_of(img, DARK_CANVAS)
+        stale = runs_of(img, LIGHT_CANVAS)
+        best = longest_rule(img)
+        ok = best >= 400 and want >= 8000 and stale < 2000
+        return ok, f"longest rule {best}px, dark canvas {want}px, stale light {stale}px"
+
+    def dgr_light_path(path):
         img = pngread.open(path)
         dark_field = runs_of(img, DARK_CANVAS)
         best = longest_rule(img)
-        ok = dark_field < 1000 and best >= 120
-        return ok, f"dark canvas pixels {dark_field} (must be ~none), longest vector rule {best}px"
+        ink = mermaid_ink(path)
+        # measured: light mermaid flowchart at zoom 1 = 71 ink px, text-only
+        # and dark-mode pages = 0, so >= 30 separates them with margin
+        ok = dark_field < 1000 and best >= 120 and ink >= 30
+        return ok, (f"dark canvas {dark_field}px (must be ~none), rule {best}px, "
+                    f"mermaid light ink {ink}px (proves a light mermaid re-render)")
 
-    quality("light style gets a light mermaid palette, still vector", dgr_light_check, p("dgr_light.png"))
+    quality("forced dark paints the dark mermaid palette", dgr_dark_path, p("dgr_flip_dark.png"))
+    quality("forcing light live repaints mermaid light, no dark field left", dgr_light_path, p("dgr_flip_light.png"))
+
+    # the same, in a process that starts light and flips to dark: the light
+    # picture carries mermaid ink and no dark field; after the flip the dark
+    # field is back.
+    rc, err = run([p("dgr.md")], ";".join([
+        "gset:prefer-light", f"shot:{p('dgr_light.png')}",
+        "gset:prefer-dark", f"shot:{p('dgr_after_dark.png')}", "quit"]),
+        env_extra=flip_env, timeout=60)
+    check("light-start diagram session exits cleanly", rc == 0, f"exit {rc}\n{err[-400:]}")
+
+    quality("light style gets a light mermaid palette, still vector", dgr_light_path, p("dgr_light.png"))
+    quality("forcing dark live repaints the dark field", dgr_dark_path, p("dgr_after_dark.png"))
 
     # the near-misses must stay text: HTML, progress bars and grid tables
     # would lose their searchable, copyable content to a picture

@@ -1,5 +1,0 @@
-mdglass-script: shot:/tmp/opencode/ex/nt.png
-mdglass-script: shot /tmp/opencode/ex/nt.png 1024x768 node=false renderer=true texture=false FAILED
-mdglass-script: shot:/tmp/opencode/ex/nt.png
-mdglass-script: shot /tmp/opencode/ex/nt.png 1024x768 node=true renderer=true texture=true ok
-mdglass-script: quit

@@ -27,6 +27,11 @@ install -Dm644 debian/copyright "$ROOT/usr/share/doc/mdglass/copyright"
 install -Dm644 debian/changelog "$ROOT/usr/share/doc/mdglass/changelog.Debian"
 gzip -9n "$ROOT/usr/share/doc/mdglass/changelog.Debian"
 install -Dm644 README.md "$ROOT/usr/share/doc/mdglass/README.md"
+# the README points at the diagram demo; ship it so the pointer lands
+install -Dm644 examples/diagrams.md "$ROOT/usr/share/doc/mdglass/examples/diagrams.md"
+for s in examples/screenshots/*.png; do
+    install -Dm644 "$s" "$ROOT/usr/share/doc/mdglass/examples/screenshots/$(basename "$s")"
+done
 install -Dm644 packaging/io.github.hpn777.MdGlass.metainfo.xml "$ROOT/usr/share/metainfo/io.github.hpn777.MdGlass.metainfo.xml"
 install -Dm644 packaging/io.github.hpn777.MdGlass.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/io.github.hpn777.MdGlass.svg"
 # GNOME preview is the visible "Open With" app; the terminal pager stays as a

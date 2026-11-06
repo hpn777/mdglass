@@ -120,6 +120,13 @@ struct Lib {
     gtk_picture_set_paintable: unsafe extern "C" fn(Ptr, Ptr),
     gdk_memory_texture_new: unsafe extern "C" fn(c_int, c_int, c_int, Ptr, usize) -> Ptr,
     g_bytes_new_with_free_func: unsafe extern "C" fn(Ptr, usize, Option<unsafe extern "C" fn(Ptr)>, Ptr) -> Ptr,
+    // the gset: script step (test hook): schema-checked GSettings write, so
+    // a host without org.gnome.desktop.interface gets a no-op, not an abort
+    g_settings_schema_source_get_default: unsafe extern "C" fn() -> Ptr,
+    g_settings_schema_source_lookup: unsafe extern "C" fn(Ptr, *const c_char, c_int) -> Ptr,
+    g_settings_schema_unref: unsafe extern "C" fn(Ptr),
+    g_settings_new_full: unsafe extern "C" fn(Ptr, Ptr, Ptr) -> Ptr,
+    g_settings_set_string: unsafe extern "C" fn(Ptr, *const c_char, *const c_char) -> c_int,
     gdk_pixbuf_loader_new_with_type: unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr,
     gdk_pixbuf_loader_write: unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int,
     gdk_pixbuf_loader_close: unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int,
@@ -328,6 +335,11 @@ fn load_lib() -> Result<Lib, String> {
             gtk_picture_set_paintable: gs!("gtk_picture_set_paintable", unsafe extern "C" fn(Ptr, Ptr)),
             gdk_memory_texture_new: gs!("gdk_memory_texture_new", unsafe extern "C" fn(c_int, c_int, c_int, Ptr, usize) -> Ptr),
             g_bytes_new_with_free_func: gs!(glib "g_bytes_new_with_free_func", unsafe extern "C" fn(Ptr, usize, Option<unsafe extern "C" fn(Ptr)>, Ptr) -> Ptr),
+            g_settings_schema_source_get_default: gs!(gio "g_settings_schema_source_get_default", unsafe extern "C" fn() -> Ptr),
+            g_settings_schema_source_lookup: gs!(gio "g_settings_schema_source_lookup", unsafe extern "C" fn(Ptr, *const c_char, c_int) -> Ptr),
+            g_settings_schema_unref: gs!(gio "g_settings_schema_unref", unsafe extern "C" fn(Ptr)),
+            g_settings_new_full: gs!(gio "g_settings_new_full", unsafe extern "C" fn(Ptr, Ptr, Ptr) -> Ptr),
+            g_settings_set_string: gs!(gio "g_settings_set_string", unsafe extern "C" fn(Ptr, *const c_char, *const c_char) -> c_int),
             gdk_pixbuf_loader_new_with_type: gopt!(pixbuf, "gdk_pixbuf_loader_new_with_type", unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr),
             gdk_pixbuf_loader_write: gopt!(pixbuf, "gdk_pixbuf_loader_write", unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int),
             gdk_pixbuf_loader_close: gopt!(pixbuf, "gdk_pixbuf_loader_close", unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int),
@@ -516,8 +528,9 @@ struct App {
     rescroll_upper: f64,
     pending_top: Option<(usize, i32)>,
     /// raw engine SVG per diagram block, keyed by (info string, source,
-    /// dark): mermaid bakes its palette in, so the theme is part of the key.
-    /// aasvg output is theme-independent but keyed the same way. None =
+    /// theme-dependent): mermaid bakes its palette, so its bit is the real
+    /// dark flag; aasvg output is theme-independent and keyed with a constant
+    /// false, so a style flip re-runs neither aasvg nor its gate. None =
     /// failed, also cached, so a broken block never re-runs the engine on
     /// every frame. Cleared when another document loads.
     svg_cache: HashMap<(String, String, bool), Option<String>>,
@@ -1180,7 +1193,10 @@ unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
     }
     let src = lines.join("\n");
     let dark = (l().adw_style_manager_get_dark)((l().adw_style_manager_get_default)()) != 0;
-    let key = (lang.to_string(), src.clone(), dark);
+    // aasvg's raw SVG is theme-independent (its colors are pinned at raster
+    // time), so only mermaid - which bakes its palette - earns a theme bit
+    // in the engine key; a style flip re-runs exactly one engine.
+    let key = (lang.to_string(), src.clone(), dark && vector::is_mermaid(lang));
     let raw = match (*app()).svg_cache.get(&key) {
         Some(hit) => hit.clone(),
         None => {
@@ -1196,7 +1212,7 @@ unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
     let Some(raw) = raw else { return std::ptr::null_mut() };
     let Some(svg) = vector::apply_theme(lang, &raw, dark) else { return std::ptr::null_mut() };
     let zoom = (*app()).zoom;
-    let rkey = key; // raster keys carry the same theme bit
+    let rkey = (key.0.clone(), key.1.clone(), dark); // raster always carries the real bit
     (*app()).used_raster.insert(rkey.clone());
     if let Some((z, pb)) = (*app()).raster_cache.get(&rkey) {
         if (z - zoom).abs() < 0.005 {
@@ -2333,6 +2349,24 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
             eprintln!("mdglass-script: hits label = {lbl:?}");
         }
         "next" => click_find_next(std::ptr::null_mut(), std::ptr::null_mut()),
+        "gset" => {
+            // Flip org.gnome.desktop.interface color-scheme; the smoke suite
+            // points GSETTINGS_BACKEND at a keyfile in its own workdir, so
+            // this steers Adwaita (and through it the diagram palettes)
+            // without ever touching the user's settings. Schema-checked:
+            // g_settings_new on a missing schema would abort the app.
+            let src = (l().g_settings_schema_source_get_default)();
+            let sch = (l().g_settings_schema_source_lookup)(src, c"org.gnome.desktop.interface".as_ptr(), 1);
+            if !sch.is_null() {
+                let st = (l().g_settings_new_full)(sch, std::ptr::null_mut(), std::ptr::null_mut());
+                (l().g_settings_schema_unref)(sch);
+                if !st.is_null() {
+                    let v = cstr(arg);
+                    (l().g_settings_set_string)(st, c"color-scheme".as_ptr(), v.as_ptr());
+                    (l().g_object_unref)(st);
+                }
+            }
+        }
         "esc" => {
             key_press(std::ptr::null_mut(), KEY_ESCAPE, 0, 0, std::ptr::null_mut());
         }
