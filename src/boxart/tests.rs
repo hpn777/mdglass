@@ -1254,6 +1254,61 @@ fn every_flowchart_link_form_is_audited() {
 }
 
 #[test]
+fn every_written_edge_and_box_is_its_own() {
+    // review #3f (1): parallel edges whose routes stacked drew as ONE
+    // arrow, or as a stroke plus a floating head
+    for src in [
+        "flowchart LR\n  subgraph s [one]\n  A{A} --> B\n  A --> B\n  end",
+        "flowchart LR\n  A{A} --> B\n  A{A} --> B",
+    ] {
+        assert_eq!(terminal_ascii(src, 60, false), None, "{src}");
+    }
+    // review #3f (2, 3): `@{}` node metadata and `click ... call cb(x)`
+    // make the crate invent boxes or drop the label mermaid shows
+    for src in [
+        "flowchart LR\n  A --> B\n  B@{ label: \"Bob\" }",
+        "flowchart LR\n  A --> B\n  B:::red@{ label: \"x\" }",
+        "flowchart LR\n  A --> B\n  click A call callback()",
+        "flowchart LR\n  A --> B\n  click B call cb(arg)",
+        // (4) a finished text link may not take a pipe label too
+        "flowchart LR\n  A -- t -->|u| B",
+        // (6) an edge into a NESTED subgraph routes to ownerless strokes
+        "flowchart LR\n  subgraph s1\n    subgraph s2\n      A\n    end\n    B\n  end\n  C --> s2",
+    ] {
+        assert_eq!(terminal_ascii(src, 60, false), None, "{src}");
+    }
+    // fuzz6b: the parser swallowed a line into ONE box reading
+    // `[Al]] ~~~ Al[Al`, and a fan wrote Bee->Cy twice under one head
+    for src in [
+        "flowchart LR\n  Bee{Bee} -.-> Cy\n  Al[[Al]] ~~~ Al[Al]\n  Cy[[Cy]] == t ==> Bee{Bee}",
+        "flowchart LR\n  subgraph box [two]\n  Bee --> Al & Bee[Bee]\n  Bee[[Bee]] --> Cy[[Cy]] & Cy\n  end",
+    ] {
+        for cols in [69, 89, 103] {
+            assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
+        }
+    }
+    // a box shows the LAST label written for its id, as in mermaid
+    let art = terminal_ascii(
+        "flowchart LR\n  A[first] --> B\n  A[second] --> C",
+        100,
+        false,
+    )
+    .expect("relabel fell back");
+    assert!(art.iter().any(|l| l.contains("second")) && !art.iter().any(|l| l.contains("first")));
+    // honest neighbours keep drawing: separate duplicates, an invisible
+    // `~~~` link (mermaid draws no line either), edges into a top-level
+    // subgraph, and a `click` that names only a link
+    for src in [
+        "flowchart LR\n  A --> B\n  A --> B",
+        "flowchart LR\n  A --> B\n  B ~~~ C\n  C --> D",
+        "flowchart LR\n  subgraph s1 [One]\n    A\n  end\n  X --> s1",
+        "flowchart LR\n  A --> B\n  click A href \"https://x\"",
+    ] {
+        assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
+    }
+}
+
+#[test]
 fn frontmatter_cannot_hide_a_title() {
     // review #3e (2): YAML quoting styles, braces, a complex key and
     // escape codes all still set the caption mermaid shows
@@ -1263,10 +1318,21 @@ fn frontmatter_cannot_hide_a_title() {
         "{title: Secret words}",
         "? title",
         "\"ti\\x74le\": Secret words",
+        // review #3f (5): an 8-digit escape, and a key folded across a
+        // `\`-escaped line break
+        "\"ti\\U00000074le\": Secret words",
+        "? \"ti\\\n  tle\"",
     ] {
         let src = format!("---\n{key}\n: Secret words\n---\nflowchart LR\n  A --> B");
         assert_eq!(terminal_ascii(&src, 100, false), None, "{key}");
     }
+    // a config key that merely CONTAINS "title" is no caption
+    assert!(terminal_ascii(
+        "---\nconfig:\n  flowchart:\n    titleTopMargin: 3\n---\nflowchart LR\n  A --> B",
+        100,
+        false
+    )
+    .is_some());
     // a frontmatter that writes no words still draws (#3d behaviour)
     assert!(terminal_ascii(
         "---\nconfig:\n  theme: dark\n---\nflowchart LR\n  A --> B",

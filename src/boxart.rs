@@ -743,8 +743,9 @@ fn flow_group_end(s: &str, close: char) -> Option<&str> {
 }
 
 /// shape and class suffixes after an id: `[x] ((x)) {x} >x] @{..} :::cls`
-fn flow_shape_tail(s: &str) -> Option<&str> {
+fn flow_shape_tail(s: &str) -> Option<(&str, Option<&str>)> {
     let mut s = s;
+    let mut label = None;
     loop {
         s = s.trim_start();
         if let Some(r) = s.strip_prefix(":::") {
@@ -752,22 +753,24 @@ fn flow_shape_tail(s: &str) -> Option<&str> {
                 .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
                 .unwrap_or(r.len());
             s = &r[e..];
-        } else if let Some(r) = s.strip_prefix('@') {
-            let r = r.strip_prefix('{')?;
-            let e = r.find('}')?;
-            s = &r[e + 1..];
+        } else if s.starts_with('@') {
+            // node metadata `@{ label: .. shape: .. }`: the crate prints it
+            // as a separate box or ignores it, never as the label/shape
+            // mermaid gives the node (review #3f, 2)
+            return None;
         } else {
             let (open_c, close_c) = match s.chars().next() {
                 Some('[') => ('[', ']'),
                 Some('(') => ('(', ')'),
                 Some('{') => ('{', '}'),
                 Some('>') => ('>', ']'),
-                _ => return Some(s.trim_start()),
+                _ => return Some((s.trim_start(), label)),
             };
             let r = &s[open_c.len_utf8()..];
             let dbl = open_c != '>' && r.starts_with(open_c);
             let r = if dbl { &r[open_c.len_utf8()..] } else { r };
             let closed = flow_group_end(r, close_c)?;
+            label = Some(&r[..r.len() - closed.len()]);
             if dbl && open_c == '(' && !r[..r.len() - closed.len()].trim().is_empty() {
                 // a `((label))` circle rasterizes to a bare dot: the
                 // label's written words would vanish from the picture
@@ -791,14 +794,22 @@ fn flow_shape_tail(s: &str) -> Option<&str> {
 /// — or an `x`/`o` arrow end returns None, and the diagram refuses: a
 /// statement mermaid rejects may not draw as confident art that drops
 /// written words.
-/// ids named by a statement, and the links it writes as endpoint pairs
-type FlowStmt<'a> = (Vec<&'a str>, Vec<(&'a str, &'a str)>);
+/// ids named by a statement, the links it writes as endpoint pairs, and
+/// the label text written inside each id's shape
+type FlowStmt<'a> = (
+    Vec<&'a str>,
+    Vec<(&'a str, &'a str)>,
+    Vec<(&'a str, &'a str)>,
+);
 
 fn flow_stmt(line: &str) -> Option<FlowStmt<'_>> {
     let mut ids: Vec<&str> = Vec::new();
+    let mut labels: Vec<(&str, &str)> = Vec::new();
     // ids between links form groups; every adjacent group pair is linked
     // crosswise, which is exactly what `A & B --> C & D` means
     let mut groups: Vec<Vec<&str>> = vec![Vec::new()];
+    // groups whose incoming link is invisible
+    let mut hidden: Vec<usize> = Vec::new();
     let mut rest = line;
     let mut need_id = true;
     loop {
@@ -807,20 +818,27 @@ fn flow_stmt(line: &str) -> Option<FlowStmt<'_>> {
             let (id, r) = flow_id(t)?;
             ids.push(id);
             groups.last_mut().unwrap().push(id);
-            rest = flow_shape_tail(r)?;
+            let (r, label) = flow_shape_tail(r)?;
+            if let Some(l) = label {
+                labels.push((id, l));
+            }
+            rest = r;
             need_id = false;
             continue;
         }
         if t.is_empty() {
             let mut pairs: Vec<(&str, &str)> = Vec::new();
-            for w in groups.windows(2) {
+            for (k, w) in groups.windows(2).enumerate() {
+                if hidden.contains(&(k + 1)) {
+                    continue;
+                }
                 for a in &w[0] {
                     for b in &w[1] {
                         pairs.push((*a, *b));
                     }
                 }
             }
-            return Some((ids, pairs));
+            return Some((ids, pairs, labels));
         }
         if let Some(r) = t.strip_prefix('&') {
             rest = r;
@@ -844,6 +862,11 @@ fn flow_stmt(line: &str) -> Option<FlowStmt<'_>> {
         if matches!(tok, "o--" | "x--" | "--x" | "--o") {
             return None; // an arrow end the flat art would flatten away
         }
+        // an invisible `~~~` link draws nothing in mermaid either: its
+        // ends must still be nodes, but it demands no edge (#3f minor)
+        if tok == "~~~" {
+            hidden.push(groups.len());
+        }
         groups.push(Vec::new()); // the next ids open the link's target group
                                  // `---->` is one arrow written with extra dashes
         let mut r = r.trim_start_matches(['-', '>', '.', '=']).trim_start();
@@ -863,6 +886,11 @@ fn flow_stmt(line: &str) -> Option<FlowStmt<'_>> {
                 // the group opened by the base IS this link's target
                 // group; the terminator merely extends the same link
                 r = after.trim_start_matches(['-', '>', '.', '=']).trim_start();
+                if r.starts_with('|') {
+                    // `A -- t -->|u| B`: mermaid rejects it, the crate keeps
+                    // `u` and drops `t` (review #3f, 4)
+                    return None;
+                }
             }
         }
         if let Some(rr) = r.strip_prefix('|') {
@@ -899,6 +927,7 @@ fn decode_escapes(line: &str) -> String {
         let n = match it.peek() {
             Some('x') => 2,
             Some('u') => 4,
+            Some('U') => 8,
             _ => {
                 out.push(c);
                 continue;
@@ -977,13 +1006,27 @@ fn graph_raster(
                 .iter()
                 .position(|l| matches!(l.trim(), "---" | "..."))
             {
-                for l in &ls[1..=end] {
-                    let d = decode_escapes(l).to_ascii_lowercase();
-                    if d.split(|c: char| !c.is_alphanumeric() && c != '_')
+                // escapes (`\x74`, `\U00000074`) decode before YAML
+                // matches a key, so words are read decoded; and since a
+                // `\`-escaped line break folds a quoted key across lines
+                // (`? "ti\` / `tle"`), a fence holding ANY backslash is
+                // read as ONE run of letters instead — an over-refusal,
+                // never a hidden caption (review #3f, 5). Without one, a
+                // config key like `titleTopMargin` is no caption.
+                let text: String = ls[1..=end]
+                    .iter()
+                    .map(|l| decode_escapes(l) + "\n")
+                    .collect::<String>()
+                    .to_lowercase();
+                let hit = if ls[1..=end].iter().any(|l| l.contains('\\')) {
+                    let run: String = text.chars().filter(|c| c.is_alphanumeric()).collect();
+                    run.contains("title") || run.contains("accdescr")
+                } else {
+                    text.split(|c: char| !c.is_alphanumeric() && c != '_')
                         .any(|w| matches!(w, "title" | "acctitle" | "accdescr"))
-                    {
-                        return Err(gate("a title the art has no room for", false));
-                    }
+                };
+                if hit {
+                    return Err(gate("a title the art has no room for", false));
                 }
             }
         }
@@ -1010,6 +1053,9 @@ fn graph_raster(
         ];
         let mut ids: Vec<&str> = Vec::new();
         let mut pairs: Vec<(&str, &str)> = Vec::new();
+        let mut labels: Vec<(&str, &str)> = Vec::new();
+        let mut open: Vec<&str> = Vec::new();
+        let mut nested: Vec<&str> = Vec::new();
         // a closed frontmatter block holds YAML keys, not statements —
         // `config: { theme: dark }` must keep drawing (#3e honest set)
         let ls: Vec<&str> = src.lines().collect();
@@ -1034,14 +1080,33 @@ fn graph_raster(
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            // subgraph nesting: an edge landing on a subgraph INSIDE another
+            // subgraph routes to strokes no element owns (review #3f, 6)
+            if head == "subgraph" {
+                let id = line["subgraph".len()..]
+                    .trim_start()
+                    .split(|c: char| c.is_whitespace() || c == '[')
+                    .next()
+                    .unwrap_or("");
+                if !open.is_empty() {
+                    nested.push(id);
+                }
+                open.push(id);
+                continue;
+            }
+            if head == "end" {
+                open.pop();
+                continue;
+            }
             if SKIP.contains(&head.as_str()) {
                 continue;
             }
-            let Some((mut line_ids, line_pairs)) = flow_stmt(line) else {
+            let Some((mut line_ids, line_pairs, line_labels)) = flow_stmt(line) else {
                 return Err(gate("a flowchart statement the parser may misread", false));
             };
             ids.append(&mut line_ids);
             pairs.extend(line_pairs);
+            labels.extend(line_labels);
         }
         // every written link with its TRUE endpoints must stand in the
         // layout: a self-loop counted but never drawn, or a dropped tail
@@ -1064,9 +1129,54 @@ fn graph_raster(
         if expect != actual {
             return Err(gate("an edge the renderer moved", true));
         }
-        for id in ids {
-            if !layout.nodes.contains_key(id) {
+        if expect
+            .iter()
+            .any(|(a, b)| nested.contains(&a.as_str()) || nested.contains(&b.as_str()))
+        {
+            return Err(gate("an edge into a nested subgraph", true));
+        }
+        for id in &ids {
+            if !layout.nodes.contains_key(*id) {
                 return Err(gate("a node the renderer lost", true));
+            }
+        }
+        // and the other way round: every box the art would draw must be
+        // an id the source wrote — `click A call cb(arg)` makes the crate
+        // invent a round node `arg` (review #3f, 3); a hidden node only
+        // anchors a subgraph and draws no box
+        if layout
+            .nodes
+            .values()
+            .any(|n| !n.hidden && !ids.contains(&n.id.as_str()))
+        {
+            return Err(gate("a node the source never wrote", true));
+        }
+        // each box must say what the source wrote for it: the text inside
+        // one of its shapes, or its bare id when it has none. The parser
+        // swallows the rest of a line into a label (`Al[[Al]] ~~~ Al[Al]`
+        // drew one box reading `[Al]] ~~~ Al[Al`, review #3f fuzz6b);
+        // spacing, quotes, `<br>` and shape brackets compare loosely
+        let norm = |t: &str| -> String {
+            let t = t.replace("<br/>", "").replace("<br>", "");
+            let t = t.trim_matches(|c: char| "[](){}/\\\"`>".contains(c) || c.is_whitespace());
+            t.chars()
+                .filter(|c| !c.is_whitespace() && *c != '"')
+                .collect()
+        };
+        for n in layout.nodes.values().filter(|n| !n.hidden) {
+            let drawn = norm(&n.label.lines.join(" "));
+            // mermaid keeps the LAST label written for an id
+            let written = labels
+                .iter()
+                .rev()
+                .find(|(i, _)| *i == n.id.as_str())
+                .map(|(_, l)| norm(l));
+            let ok = match written {
+                None => drawn == norm(&n.id),
+                Some(w) => drawn == w,
+            };
+            if !ok {
+                return Err(gate("a node label the source never wrote", true));
             }
         }
     }
@@ -1536,6 +1646,18 @@ fn graph_raster(
         // lines (┼ reads correctly); anything else merges two connections
         // into one shape that exists in no source file
         for prev in &drawn {
+            // two edges between the SAME pair of boxes must each show a
+            // stroke of their own: a route that lies wholly on the other's
+            // cells (outside the boxes) draws two edges as one arrow, or
+            // leaves a floating head with no line (review #3f, 1)
+            if (prev.from == from && prev.to == to) || (prev.from == to && prev.to == from) {
+                let off_ends = |c: &(i32, i32)| !(end_has(from, c.0, c.1) || end_has(to, c.0, c.1));
+                let mine_own = cells.iter().any(|c| off_ends(c) && !prev.cells.contains(c));
+                let theirs_own = prev.cells.iter().any(|c| off_ends(c) && !cells.contains(c));
+                if !mine_own || !theirs_own {
+                    return Err(gate("two parallel edges drawn as one", true));
+                }
+            }
             // shared role, not just a shared node: A-->B and B-->A converge
             // at both ends yet read as two arrows, so only same-role pairs
             // (both leaving A / both entering B) may merge freely
@@ -1640,6 +1762,13 @@ fn graph_raster(
                 };
                 if prev.cells.contains(&(hx, hy)) && !same_role {
                     return Err(gate("arrowhead stamped on a foreign line", true));
+                }
+                // two edges between the same boxes showing ONE head read
+                // as one edge (review #3f fuzz6b)
+                let same_pair =
+                    (prev.from == from && prev.to == to) || (prev.from == to && prev.to == from);
+                if same_pair && prev.heads.contains_key(&(hx, hy)) {
+                    return Err(gate("two parallel edges share one arrowhead", true));
                 }
             }
             let dec = if start {

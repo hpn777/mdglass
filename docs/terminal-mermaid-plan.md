@@ -340,8 +340,27 @@ The layout does not depend on width; only rasterization does. Memoize
   their true endpoints (`&` fans expanded crosswise), must match the
   layout's edge multiset EXACTLY: a self-loop counted but never drawn
   and a tail relabelled as one longer edge both fail (#3d, 5; #3e, 1
-  + fuzz6). State keeps the canonical arrow audit: its grammar has no
-  open or text link forms.
+  + fuzz6). The check runs BOTH ways: every box the art would draw
+  must be an id the source wrote, since `click A call cb(arg)` makes
+  the crate invent a node `arg` (#3f, 3); node metadata `@{ label: ..
+  }` refuses because its label or shape never reaches the art (#3f,
+  2); a finished text link may not take a `|label|` as well (#3f, 4);
+  an edge into a subgraph nested inside another routes to strokes no
+  element owns and refuses (#3f, 6); and two edges between the same
+  pair of boxes must each keep cells of their own outside the boxes,
+  or the raster has drawn two edges as one arrow (#3f, 1) — nor may
+  they share one arrowhead. Every visible box must also SAY what the
+  source wrote for it: the text of the last shape written for its id,
+  or the bare id when none was (compared ignoring spacing, quotes,
+  `<br>` and shape brackets) — the parser swallows line tails into
+  labels (`Al[[Al]] ~~~ Al[Al]` drew one box reading `[Al]] ~~~
+  Al[Al`, #3f fuzz). Invisible
+  `~~~` links demand their nodes but no edge — mermaid draws no line
+  for them either. Escapes include 8-digit `\U`, and a frontmatter
+  fence holding any backslash is read as one run of letters, since a
+  `\`-escaped break folds a quoted key across lines (#3f, 5). State
+  keeps the canonical arrow audit: its grammar has no open or text
+  link forms.
   Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, quoted note actors (mermaid gives `Note over "C"` a lane of its
