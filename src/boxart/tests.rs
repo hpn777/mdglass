@@ -1522,6 +1522,16 @@ fn boxes_and_notes_stay_where_they_were_written() {
             assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
         }
     }
+    // review #3q: two labelled routes from one box crossing at a `┼`
+    // where both turn read as straight lines — "ok" landed on HUB→N4
+    let fan = "flowchart TD\n    HUB -->|ok| N0\n    HUB -->|retry| N2\n    HUB -->|yes| N3\n    HUB -->|a| N4\n    HUB -->|d| N5";
+    for w in [60, 80, 100, 120, 160] {
+        if let Some(art) = terminal_ascii(fan, w, false) {
+            let art = art.join("\n");
+            assert!(!art.contains('┼'), "width {w}:\n{art}");
+        }
+    }
+    assert_eq!(terminal_ascii(fan, 80, false), None);
     // the mermaid.live default at 60 cols put two heads back to back
     // (`iPhone ┐◄►┌ Car`); it refuses there and draws from 70
     let xmas = "flowchart TD\n    A[Christmas] -->|Get money| B(Go shopping)\n    B --> C{Let me think}\n    C -->|One| D[Laptop]\n    C -->|Two| E[iPhone]\n    C -->|Three| F[fa:fa-car Car]";

@@ -2264,6 +2264,19 @@ fn graph_raster(
             if hits_head {
                 return Err(gate("route runs through a foreign arrowhead", true));
             }
+            if shares {
+                let turn_turn = shared.iter().any(|c| {
+                    let mine = dirs.get(c).copied().unwrap_or(0);
+                    let theirs = prev.dirs.get(c).copied().unwrap_or(0);
+                    let sns = |m: u8| m != 0 && m & !M_NS == 0;
+                    let sew = |m: u8| m != 0 && m & !M_EW == 0;
+                    mine | theirs == M_ALL
+                        && !((sns(mine) && sew(theirs)) || (sew(mine) && sns(theirs)))
+                });
+                if turn_turn {
+                    return Err(gate("two routes merge into a shape no source draws", true));
+                }
+            }
             if !shares {
                 let cross = shared.iter().all(|c| {
                     let mine = dirs.get(c).copied().unwrap_or(0);

@@ -413,7 +413,10 @@ The layout does not depend on width; only rasterization does. Memoize
   share any cell refuse: nested subgraphs given one rect drew as a
   single frame (#3m, 1). Two arrowheads of different edges back to back
   (`◄►`, `▲` over `▼`) refuse: they read as one double-headed connector
-  (#3p minor; the mermaid.live default example at 60 columns).
+  (#3p minor; the mermaid.live default example at 60 columns). The
+  turn-turn `┼` refusal holds for edges sharing an endpoint too: two
+  labelled routes from one box crossing so would carry a label onto the
+  wrong edge (#3q, 1).
   Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, quoted note actors (mermaid gives `Note over "C"` a lane of its
