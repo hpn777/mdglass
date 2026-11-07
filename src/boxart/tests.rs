@@ -994,7 +994,7 @@ fn activation_bars_anchor_on_every_visible_statement() {
     // activate as the first line: the bar starts under the head boxes,
     // not below the note written after it
     let a = rows(
-        "sequenceDiagram\n activate B\n Note over A: n1\n A->>B: m1\n deactivate B\n",
+        "sequenceDiagram\n activate A\n A->>B: m1\n Note over B: n1\n deactivate A\n B->>A: m2\n",
         100,
     );
     let b = bar_rows(&a);
@@ -1004,7 +1004,7 @@ fn activation_bars_anchor_on_every_visible_statement() {
         a.join("\n")
     );
     // a never-closed bar runs past a trailing note down to the foot
-    let a = rows("sequenceDiagram\n alt F01\n  activate Pa\n  Qb-->>Pa: m01\n  Qb->>Pa: m02\n  else E02\n  Pa->>Qb: m03\n end\n Pa-->>Qb: m04\n Qb-->>Pa: m05\n Qb-->>Pa: m06\n  Pa-->>Qb: m07\n Note over Qb: n01\n Note over Pa: n02\n", 100);
+    let a = rows("sequenceDiagram\n activate Pa\n Pa->>Qb: m01\n Qb->>Pa: m02\n Pa->>Qb: m03\n Qb->>Pa: m04\n Pa->>Qb: m05\n Note over Qb: n01\n Note over Pa: n02\n", 100);
     let b = bar_rows(&a);
     assert!(
         !b.is_empty() && a[row_of(&a, "n01")].contains('\u{2551}'),
@@ -1064,6 +1064,156 @@ fn a_repeated_pie_label_refuses() {
         terminal_ascii("pie\n \"a\": 1\n \"b\": 1\n \"a\": 2\n", 90, false),
         None
     );
+}
+
+#[test]
+fn a_bar_behind_every_note_refuses() {
+    // review #3d (1): a note covering the bar's whole span would draw
+    // no activation at all while mermaid keeps a stub in view
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n A->>B: m1\n activate A\n Note over A: n1\n deactivate A\n A->>B: m2\n",
+            100,
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn an_activation_line_must_not_move_a_lane() {
+    // review #3d (2): the crate registers a lifeline at an `activate`
+    // line, sliding that participant left of the first speaker; mermaid
+    // orders lanes by declarations and messages only
+    assert_eq!(
+        terminal_ascii("sequenceDiagram\n activate B\n A->>B: m1\n", 100, false),
+        None
+    );
+    // declarations still rule: B declared first stays first
+    assert!(terminal_ascii(
+        "sequenceDiagram\n participant B\n A->>B: m1\n participant A\n B->>A: m2\n",
+        100,
+        false
+    )
+    .is_some());
+    // review #3d fuzz5: a `Note over` names a lane where it is written,
+    // so Qb leads here — an early activate cannot pull Pa ahead of it
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n activate Pa\n Note over Qb: n01\n Pa-->>Qb: m01\n",
+            148,
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_bar_drawn_only_as_wall_junctions_refuses() {
+    // review #3d fuzz5: `->>+` on the final message inside a frame left
+    // the bar no free row — every cell became a `╬` crossing, no `║`
+    // stroke anywhere, while mermaid keeps the activation visible
+    let src = "sequenceDiagram\n Pa-->>Qb: m01\n Qb->>Pa: m02\n loop F01\n  Qb->>+Pa: m03\n end\n";
+    for cols in [80, 116, 156] {
+        if let Some(a) = terminal_ascii(src, cols, false) {
+            assert!(
+                a.iter().any(|l| l.contains('\u{2551}')),
+                "activation drawn only as junctions at {cols} cols\n{}",
+                a.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn a_momentary_bar_never_drops_into_the_next_branch() {
+    // review #3d (3): activate+deactivate just before an `else` belongs
+    // to the branch above the divider - never below it
+    let src = "sequenceDiagram\n participant A\n participant B\n A->>B: m1\n alt X\n A->>B: m2\n activate B\n deactivate B\n else Y\n A->>B: m3\n end\n A->>B: m4\n";
+    for cols in [60, 100, 140] {
+        if let Some(a) = terminal_ascii(src, cols, false) {
+            let div = a.iter().position(|l| l.contains("[Y]")).unwrap();
+            assert!(
+                a.iter()
+                    .enumerate()
+                    .all(|(y, l)| !l.contains('\u{2551}') || y < div),
+                "stub fell through the divider at {cols} cols\n{}",
+                a.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn graph_statements_holding_semicolons_or_comments_refuse() {
+    // review #3d (4): mermaid splits on `;` and comments from a mid-line
+    // `%%` in EVERY diagram kind; the crate merges both into labels
+    assert_eq!(
+        terminal_ascii("flowchart TD\n A[hi] -->|go %% secret| B[bye]", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("flowchart TD\n A[hi %% there] --> B", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("flowchart TD\n A -->|a;b| B", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("stateDiagram-v2\n S1 --> S2 : go %% secret", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("stateDiagram-v2\n S1 --> S2 : go;stop", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("erDiagram\n A ||--|| B : owns ; x", 100, false),
+        None
+    );
+}
+
+#[test]
+fn a_lost_node_or_arrow_refuses() {
+    // review #3d (5): the flowchart parser drops statement tails -
+    // chained edges lose their last node, `~~~` loses its target - so
+    // every id an arrow statement names must survive in the layout
+    assert_eq!(
+        terminal_ascii("flowchart TD\n A -->|x| B -->|y| C", 100, false),
+        None
+    );
+    assert_eq!(terminal_ascii("flowchart TD\n A ~~~ B", 100, false), None);
+    // review #3d (6): a frontmatter title is a caption the graph art
+    // never draws, and dropping written words is a lie
+    assert_eq!(
+        terminal_ascii("---\ntitle: X\n---\nflowchart TD\n A --> B", 100, false),
+        None
+    );
+    // the start/end pseudo-state draws as a dot, not a node: demanding
+    // it would refuse every state diagram
+    assert!(terminal_ascii("stateDiagram-v2\n [*] --> Idle\n Idle --> [*]", 100, false).is_some());
+}
+
+#[test]
+fn nested_frames_join_their_outer_wall() {
+    // review #3d note: nested frames never drew at all (the containment
+    // test contradicted itself); they must draw with the outer wall
+    // intact - corners meeting it become T-junctions, never doors
+    let art = terminal_ascii(
+        "sequenceDiagram\n A->>B: m1\n alt L1\n A->>B: m2\n else E1\n opt O1\n A->>B: m3\n end\n activate B\n A->>B: m4\n end\n deactivate B\n A->>B: m5\n",
+        100,
+        false,
+    )
+    .expect("nested frames fell back");
+    assert!(art.iter().any(|l| l.contains("[L1]")));
+    assert!(art.iter().any(|l| l.contains("[O1]")));
+    // the inner frame opens ON the outer wall with a T, not a corner
+    // that broke the outer stroke
+    assert!(art
+        .iter()
+        .any(|l| l.trim_start().starts_with('\u{251c}') && l.contains("opt")));
+    assert!(art.iter().any(|l| l.contains('\u{2551}')));
 }
 
 #[test]

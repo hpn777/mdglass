@@ -273,13 +273,24 @@ The layout does not depend on width; only rasterization does. Memoize
   neither ignores a note it should span nor starts beside a note written
   before it. Activations name participant IDS only — display aliases map
   bars to the wrong lane and a bare display name is a TypeError in
-  mermaid, so a name that never speaks refuses (review #3c, 3). A column
+  mermaid, so a name that never speaks refuses (review #3c, 3). Lane
+  order belongs to the SOURCE — declarations, then first mention in
+  messages and notes alike; an `activate` names a participant but
+  creates no lane, yet the crate registers a lifeline at its line and
+  would slide that participant ahead of the first speaker, so the
+  layout's lanes must line up with the source's or the diagram refuses
+  (#3d, 2). A column
   that would coincide with a frame's wall over the bar's rows refuses
   rather than vanish into the wall or open a false junction (#3c, 6); a
   bar no statement spans takes one free row strictly BEFORE the next
-  statement, or refuses (#3c, 5). The bar hides behind arrows, boxes and
-  words (they out-rank it) and joins a crossed wall as a junction,
-  because both lines truly continue. A message label may
+  statement — walls, floors and dividers close that gap too, so a stub
+  opened before an `else` never drops below its divider (#3c, 5; #3d,
+  3) — or refuses. A bar that survives no row as an actual `║` stroke
+  (every cell hidden behind a box, or reduced to wall junctions)
+  refuses too: the reader must SEE the activation mermaid shows (#3d,
+  1). The bar hides behind arrows, boxes and words (they out-rank it)
+  and joins a crossed wall as a junction, because both lines truly
+  continue. A message label may
   only sit ABOVE its arrow: below, an unlabelled neighbour makes the
   caption swap silent and the fuzz proved readers take the bait (review
   #3b, 2), so a label with no honest row above refuses the diagram. A
@@ -288,7 +299,12 @@ The layout does not depend on width; only rasterization does. Memoize
   two branches at once (review #3b, 4). Alt/else/opt/loop
   frames draw; two frames that overlap where neither strictly contains
   the other (the crate stacks consecutive blocks' walls into one row)
-  refuse whole (B2). The renderer deletes every frame that holds no
+  refuse whole (B2). Containment reads the y band strictly but the x
+  band loosely: frames spanning the same lanes NEST at the same x, and
+  mermaid draws an opt inside an alt across the full width — the inner
+  frame opens on the outer wall with a T-junction (`├──opt──┤`), never
+  a corner that cuts a door in the outer stroke, while sharing a wall
+  ROW stays the merge artifact B2 refuses (#3d note). The renderer deletes every frame that holds no
   message (empty or notes-only), taking its keyword, condition and
   else-branches with it, so the written frame and divider counts must
   match the layout's or the diagram refuses (review #3b, 3). Counts are
@@ -302,7 +318,16 @@ The layout does not depend on width; only rasterization does. Memoize
   wrote is invented (#3c note). The scanner also refuses any line holding
   a `;` (mermaid splits statements there, the crate merges them into one
   label and drops an event, #3c, 2) or a mid-line `%%` (a comment there
-  truncates the label upstream, #3c, 8). Only `Note over` draws — and only where a free band exists;
+  truncates the label upstream, #3c, 8) — and that scan guards EVERY
+  kind, not just sequence: `A[hi %% x]` truncates a flowchart node and
+  `A -->|a;b| B` splits a label into two nodes exactly the same way
+  (#3d, 4); a frontmatter or `title` line names a caption the graph art
+  has no room to draw, so flowchart, state and ER refuse rather than
+  silently drop the word (#3d, 6). Flowchart and state are audited for
+  LOST pieces too — the parser drops whole statement tails:
+  `A -->|x| B -->|y| C` loses C and `A ~~~ B` loses B — so every node
+  id an arrow statement names must exist in the layout and the layout
+  must hold at least as many edges as the source has arrows (#3d, 5). Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, source-end arrowheads and stick figures refuse whole.
 - `emit` now glyph-converts only cells with a routing mask: the sequence

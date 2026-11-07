@@ -671,7 +671,7 @@ fn raster(
     // lie to the pager's cache probe about what a real run would draw
     match layout.kind {
         DiagramKind::Flowchart | DiagramKind::State | DiagramKind::Er => {
-            graph_raster(layout, cols, rows, plain, win)
+            graph_raster(src, layout, cols, rows, plain, win)
         }
         DiagramKind::Sequence => sequence_raster(src, layout, cols, rows, plain),
         DiagramKind::Pie => pie_list(src, layout, cols.min(win)),
@@ -679,7 +679,23 @@ fn raster(
     }
 }
 
+/// the node id at the head of an arrow-statement segment: an optional
+/// `|link text|` first, then the bare word before any label bracket
+fn graph_seg_id(seg: &str) -> Option<&str> {
+    let mut t = seg.trim_start();
+    if let Some(r) = t.strip_prefix('|') {
+        t = r.split_once('|').map(|(_, r)| r).unwrap_or("");
+    }
+    let t = t.trim_start();
+    let end = t
+        .find([' ', '\t', '[', '(', '{', '"', '`', ':'])
+        .unwrap_or(t.len());
+    let id = t[..end].trim();
+    (!id.is_empty()).then_some(id)
+}
+
 fn graph_raster(
+    src: &str,
     layout: &Layout,
     cols: usize,
     rows: usize,
@@ -687,6 +703,103 @@ fn graph_raster(
     win: usize,
 ) -> Result<Vec<String>, Fail> {
     let kind = layout.kind;
+    // statement honesty for the graph kinds (review #3d, 4/6): mermaid
+    // splits on `;` and comments from any mid-line `%%`, the crate does
+    // neither, so `A[hi %% x]` truncates and `A -->|a;b| B` splits a
+    // label into two nodes; and a frontmatter `title:` names a caption
+    // the graph art has no room to draw, so it must not silently vanish
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if line.contains(';') {
+            return Err(gate(
+                "a semicolon splits statements the parser merges",
+                false,
+            ));
+        }
+        if line.contains("%%") {
+            return Err(gate(
+                "a mid-line comment truncates the label upstream",
+                false,
+            ));
+        }
+        if line
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .next()
+            == Some("title")
+        {
+            return Err(gate("a title the art has no room for", false));
+        }
+    }
+    // lost-piece audit for flowchart and state (review #3d, 5): the
+    // crate's flowchart parser drops whole tails of a statement —
+    // `A -->|x| B -->|y| C` loses C, `A ~~~ B` loses B — so every node
+    // id an arrow statement names must exist in the layout, and the
+    // layout must hold at least as many edges as the source has arrows
+    if matches!(kind, DiagramKind::Flowchart | DiagramKind::State) {
+        const CANON: [&str; 4] = ["-.->", "==>", "-->", "~~~"];
+        let mut arrows = 0usize;
+        let mut ids: Vec<&str> = Vec::new();
+        for raw in src.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with("%%") {
+                continue;
+            }
+            // split on the canonical arrow tokens, non-overlapping
+            let mut segs: Vec<&str> = Vec::new();
+            let mut rest = line;
+            'scan: while !rest.is_empty() {
+                let mut best: Option<(usize, &str)> = None;
+                for t in CANON {
+                    if let Some(p) = rest.find(t) {
+                        let better = match best {
+                            None => true,
+                            Some((bp, bt)) => p < bp || (p == bp && t.len() > bt.len()),
+                        };
+                        if better {
+                            best = Some((p, t));
+                        }
+                    }
+                }
+                let Some((p, t)) = best else { break };
+                segs.push(&rest[..p]);
+                rest = &rest[p + t.len()..];
+                continue 'scan;
+            }
+            let count = segs.len(); // arrows == splits
+            if count == 0 {
+                continue;
+            }
+            segs.push(rest);
+            arrows += count;
+            // ids live at segment heads; a fan-out `A & B --> C` puts
+            // them elsewhere, so only the endpoints are safe to demand
+            let id_of = graph_seg_id;
+            if !line.contains('&') {
+                if let Some(id) = id_of(segs[0]) {
+                    ids.push(id);
+                }
+                for seg in segs[1..].iter().copied() {
+                    if let Some(id) = id_of(seg) {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        if layout.edges.len() < arrows {
+            return Err(gate("an arrow the renderer lost", true));
+        }
+        for id in ids {
+            if id == "[*]" {
+                continue; // the start/end pseudo-state draws as a dot
+            }
+            if !layout.nodes.contains_key(id) {
+                return Err(gate("a node the renderer lost", true));
+            }
+        }
+    }
     // per-kind admission (docs/terminal-mermaid-plan.md): anything this
     // renderer would misstate refuses before touching the grid
     if let DiagramData::Graph { state_notes } = &layout.diagram {
@@ -1889,6 +2002,12 @@ fn band_clear(g: &Grid, r: Rect) -> bool {
 /// the receiver of a `-` arrow where mermaid deactivates the sender
 struct SeqSrc<'a> {
     msgs: Vec<(&'a str, &'a str)>,
+    /// declared participant ids, in the order the source declared them
+    decls: Vec<&'a str>,
+    /// participants in first-mention order over messages AND notes:
+    /// mermaid gives a lane to a named note actor where it is written
+    /// (review #3d, fuzz5), so the lane order follows this chain
+    appear: Vec<&'a str>,
     events: Vec<SeqEvt<'a>>,
     frames: Vec<FrameSrc>,
     sections: usize,
@@ -1965,6 +2084,8 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
     let mut out = SeqSrc {
         msgs: Vec::new(),
         events: Vec::new(),
+        decls: Vec::new(),
+        appear: Vec::new(),
         frames: Vec::new(),
         sections: 0,
         notes: 0,
@@ -2037,8 +2158,39 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                 "note" => {
                     last = Last::Note(out.notes);
                     out.notes += 1;
+                    // `Note over A,B:` / `Note left of A:` name lanes at
+                    // this line in mermaid; collect plain ids only
+                    let rest = line[head.len()..]
+                        .split(':')
+                        .next()
+                        .unwrap_or("");
+                    for tok in rest.split(',').flat_map(|t| t.split_whitespace()) {
+                        let id = tok.trim_matches('"');
+                        if !id.is_empty()
+                            && !matches!(
+                                id.to_ascii_lowercase().as_str(),
+                                "over" | "left" | "right" | "of"
+                            )
+                            && id.chars().all(|c| {
+                                c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
+                            })
+                        {
+                            out.appear.push(id);
+                        }
+                    }
                 }
-                "participant" | "actor" | "sequencediagram" => {}
+                "participant" | "actor" => {
+                    // the id is the FIRST word (`participant B as Bob`
+                    // declares B); the lane order gate needs declarations
+                    let id = line[head.len()..]
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("");
+                    if !id.is_empty() {
+                        out.decls.push(id);
+                    }
+                }
+                "sequencediagram" => {}
                 "activate" | "deactivate" => {
                     // ids only: mermaid resolves activations by participant
                     // id and errors on a bare display name (review #3c, 3);
@@ -2114,6 +2266,8 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
         }
         let i = out.msgs.len();
         out.msgs.push((left, right));
+        out.appear.push(left);
+        out.appear.push(right);
         last = Last::Msg(i);
         // `->>+` wakes the receiver from this arrow on; `->>-` retires
         // the SENDER after it (mermaid semantics; the crate applies `-`
@@ -2312,6 +2466,28 @@ fn sequence_raster(
         lane.insert(l.id.as_str(), c);
     }
 
+    // lane order must follow mermaid: declared participants, then first
+    // appearance in the messages. An `activate` line names a participant
+    // but creates no lane there — the crate registers one at its line
+    // and slides that lane left of the speakers (review #3d, 2). Note
+    // ghosts add lanes in both renderers, so only lanes that speak or
+    // declare must line up in order
+    let mut want: Vec<&str> = Vec::new();
+    for d in aud.decls.iter().chain(aud.appear.iter()) {
+        if !want.contains(d) {
+            want.push(d);
+        }
+    }
+    let lined_up: Vec<&str> = seq
+        .lifelines
+        .iter()
+        .map(|l| l.id.as_str())
+        .filter(|id| want.contains(id))
+        .collect();
+    if lined_up != want {
+        return Err(gate("a line the renderer moved to another lane", true));
+    }
+
     // the claim ledger: rows belong to full-width lines (walls, dividers,
     // arrows and labels); boxes and notes own rectangles and may share a
     // row with each other only where their columns do not touch; wall and
@@ -2349,8 +2525,13 @@ fn sequence_raster(
         for j in i + 1..frects.len() {
             let (a, b) = (&frects[i], &frects[j]);
             if a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1 {
-                let a_in_b = b.x0 < a.x0 && a.x1 < b.x1 && b.y0 < a.y0 && a.y1 < b.y1;
-                let b_in_a = a.x0 < b.x0 && b.x1 < a.x1 && a.y0 < b.y0 && a.y1 < b.y1;
+                // frames spanning the same lanes nest at the SAME x —
+                // mermaid draws an opt inside an alt across the full
+                // width — so containment is relaxed on x but strict on
+                // y: sharing a wall ROW stays the B2 merge artifact it
+                // is, and a real cross-overlap stays refused
+                let a_in_b = b.x0 <= a.x0 && a.x1 <= b.x1 && b.y0 < a.y0 && a.y1 < b.y1;
+                let b_in_a = a.x0 <= b.x0 && b.x1 <= a.x1 && a.y0 < b.y0 && b.y1 < a.y1;
                 if !(a_in_b || b_in_a) {
                     return Err(gate(
                         "two frames overlap where neither holds the other",
@@ -2371,6 +2552,27 @@ fn sequence_raster(
         lines: Vec<i32>,
     }
     let mut frame_rows: Vec<(usize, FrameRows)> = Vec::new();
+    // a nested frame's wall meeting an already-drawn wall must join it,
+    // not punch a hole the source never drew: the outer wall keeps its
+    // stroke and the joint reads as a T or a cross (review #3d, nested
+    // art; frames arrive outer-first, so inner frames land on the join)
+    let lane_cols: Vec<i32> = lane.values().copied().collect();
+    let put_join = |g: &mut Grid, x: i32, y: i32, want: char| {
+        let cur = g.get(x, y).map(|c| c.ch).unwrap_or(' ');
+        // a `│` not standing on a lane column is an outer frame's wall
+        let outer_wall = matches!(cur, '\u{2502}' | '\u{2551}') && !lane_cols.contains(&x);
+        let ch = if outer_wall {
+            match want {
+                w if w == tl || w == bl => t_r,
+                w if w == tr || w == br => t_l,
+                w if w == hb => cross,
+                _ => return, // side on side: the same stroke already stands
+            }
+        } else {
+            want // empty air, or a lane the wall erases as it always has
+        };
+        g.put(x, y, ch, FRAME);
+    };
     for (fi, f) in seq.frames.iter().enumerate() {
         let (x0, x1) = (cx(f.x), cx(f.x + f.width));
         if x1 - x0 < 3 {
@@ -2397,17 +2599,19 @@ fn sequence_raster(
             return Err(gate("a frame this short cannot hold its sections", true));
         }
         for x in x0 + 1..x1 {
-            g.put(x, y0, hb, FRAME);
-            g.put(x, y1, hb, FRAME);
+            put_join(&mut g, x, y0, hb);
+            put_join(&mut g, x, y1, hb);
         }
         for y in y0 + 1..y1 {
-            g.put(x0, y, vb, FRAME);
-            g.put(x1, y, vb, FRAME);
+            // side walls: a column an outer wall already holds is `│`
+            // either way; only a cross on a drawn horizontal matters
+            put_join(&mut g, x0, y, vb);
+            put_join(&mut g, x1, y, vb);
         }
-        g.put(x0, y0, tl, FRAME);
-        g.put(x1, y0, tr, FRAME);
-        g.put(x0, y1, bl, FRAME);
-        g.put(x1, y1, br, FRAME);
+        put_join(&mut g, x0, y0, tl);
+        put_join(&mut g, x1, y0, tr);
+        put_join(&mut g, x0, y1, bl);
+        put_join(&mut g, x1, y1, br);
         for x in x0..=x1 {
             sacred.insert((x, y0));
             sacred.insert((x, y1));
@@ -2840,6 +3044,14 @@ fn sequence_raster(
     // before whatever the source wrote next, never after it (#3c, 5)
     let mut bounds: Vec<i32> = msg_rows.clone();
     bounds.extend(note_rects.iter().map(|r| r.y0));
+    // walls, floors and dividers close a gap too: a bar opened before an
+    // `else` belongs to the branch above it, never below the divider
+    // (review #3d, 3)
+    for (_, f) in &frame_rows {
+        bounds.push(f.y0);
+        bounds.push(f.y1);
+        bounds.extend(f.lines.iter().copied());
+    }
     bounds.push(foot_top);
     for (col, top, bot) in bars {
         if lane.values().any(|&l| l == col) || col >= cols as i32 - 1 {
@@ -2878,6 +3090,7 @@ fn sequence_raster(
             }
             continue;
         }
+        let mut seen = 0;
         for y in top..=bot {
             if sacred.contains(&(col, y)) {
                 let ch = g.get(col, y).map(|c| c.ch).unwrap_or(' ');
@@ -2895,11 +3108,25 @@ fn sequence_raster(
                         | '\u{2518}'
                 ) && !ch.is_alphanumeric()
                 {
+                    // the junction joins the wall honestly, but it is
+                    // not a bar STROKE: only `║` cells count towards
+                    // "a reader can see this activation" (review #3d)
                     g.put(col, y, cross, FRAME);
+                } else if ch == '\u{2551}' {
+                    seen += 1;
                 }
             } else {
                 g.put(col, y, bar, FRAME);
+                if g.get(col, y).is_some_and(|c| c.ch == bar) {
+                    seen += 1;
+                }
             }
+        }
+        // a bar every note covered would draw an activation the reader
+        // cannot see, while mermaid keeps a stub in view: refusing beats
+        // a picture whose answer to "is B active?" is wrong (review #3d, 1)
+        if seen == 0 {
+            return Err(gate("an activation no reader could see", true));
         }
     }
 
