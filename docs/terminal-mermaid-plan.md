@@ -271,7 +271,11 @@ The layout does not depend on width; only rasterization does. Memoize
   the source wrote in between (review #3c, 4): a start begins one row
   below that statement's drawn row and an end closes on it, so a bar
   neither ignores a note it should span nor starts beside a note written
-  before it. Activations name participant IDS only — display aliases map
+  before it. Every note must be drawn strictly inside each frame written
+  around it — in the very section (`alt`/`else` branch) it was written
+  in — and clear of every other frame: the crate dropped a note ending
+  an `alt` branch below the `else` divider, and drew a frame too narrow
+  for a note's lane (review #3k, 2). Activations name participant IDS only — display aliases map
   bars to the wrong lane and a bare display name is a TypeError in
   mermaid, so a name that never speaks refuses (review #3c, 3). Lane
   order belongs to the SOURCE — declarations, then first mention in
@@ -366,7 +370,10 @@ The layout does not depend on width; only rasterization does. Memoize
   `style A color:red C[Box]` is a mermaid parse error whose `Box` the
   art would drop (#3j, 2); a node named in two subgraphs refuses, since
   mermaid gives it to the one that closes first and draws the other,
-  emptied, as a titled box (#3j, 1); and two edges between the same
+  emptied, as a titled box (#3j, 1); every visible box must be DRAWN
+  inside exactly as many frames as its subgraph is deep, the innermost
+  titled as that subgraph (a node named only by `~~~` inside one was
+  placed outside it, #3k, 1); and two edges between the same
   pair of boxes must each keep cells of their own outside the boxes,
   or the raster has drawn two edges as one arrow (#3f, 1) — nor may
   they share one arrowhead. Every visible box must also SAY what the

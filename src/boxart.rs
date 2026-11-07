@@ -905,6 +905,22 @@ type FlowStmt<'a> = (
     Vec<(&'a str, &'a str)>,
 );
 
+/// the title a `subgraph` line shows: `[Title]` after the id, the quoted
+/// id itself, the bare id, or (`subgraph a b`) the whole text
+fn flow_subgraph_title(line: &str) -> &str {
+    let t = line["subgraph".len()..].trim();
+    if t.starts_with('"') {
+        return t;
+    }
+    let id = flow_subgraph_id(line);
+    let rest = t[id.len()..].trim();
+    match rest.strip_prefix('[') {
+        Some(r) => r.strip_suffix(']').unwrap_or(r),
+        None if rest.is_empty() => id,
+        None => t,
+    }
+}
+
 /// One flowchart statement, fully tokenized (review #3e, 1/4): id members
 /// (shapes, `@{}`, `:::` classes) separated by link tokens, `&` fans and
 /// the text forms `-- t -->`, `-. t .->`, `== t ==>`. Any word the
@@ -1213,6 +1229,8 @@ fn graph_raster(
         let mut member_of: Vec<(&str, usize)> = Vec::new();
         let mut open_no: Vec<usize> = Vec::new();
         let mut opened = 0usize;
+        // per subgraph (declaration number): nesting depth and title
+        let mut sg_info: Vec<(usize, &str)> = Vec::new();
         for (no, raw) in ls.iter().enumerate() {
             if !stmt(no, raw) {
                 continue;
@@ -1247,6 +1265,7 @@ fn graph_raster(
                 filled.push(false);
                 open_no.push(opened);
                 opened += 1;
+                sg_info.push((open.len(), flow_subgraph_title(line)));
                 continue;
             }
             if head == "end" {
@@ -1373,6 +1392,44 @@ fn graph_raster(
             };
             if !ok {
                 return Err(gate("a node label the source never wrote", true));
+            }
+        }
+        // and each box must be DRAWN in the frames the source put it in:
+        // inside exactly as many frames as its subgraph is deep, the
+        // innermost titled as that subgraph. A node named only by a `~~~`
+        // link inside a subgraph is placed outside it (review #3k, 1)
+        let drawn: Vec<&mermaid_rs_renderer::layout::SubgraphLayout> = layout
+            .subgraphs
+            .iter()
+            .filter(|sg| frame_rect(sg).is_some())
+            .collect();
+        for n in layout.nodes.values().filter(|n| !n.hidden) {
+            let (mx, my) = (n.x + n.width / 2.0, n.y + n.height / 2.0);
+            let mut around: Vec<&&mermaid_rs_renderer::layout::SubgraphLayout> = drawn
+                .iter()
+                .filter(|sg| {
+                    sg.x < mx && mx < sg.x + sg.width && sg.y < my && my < sg.y + sg.height
+                })
+                .collect();
+            around.sort_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)));
+            let want = member_of
+                .iter()
+                .find(|(m, _)| *m == n.id.as_str())
+                .and_then(|&(_, k)| sg_info.get(k));
+            let ok = match want {
+                None => around.is_empty(),
+                Some(&(depth, title)) => {
+                    around.len() == depth
+                        && around
+                            .first()
+                            .is_some_and(|sg| norm(&sg.label) == norm(title))
+                }
+            };
+            if !ok {
+                return Err(gate(
+                    "a box drawn outside the subgraph it was written in",
+                    true,
+                ));
             }
         }
     }
@@ -2672,6 +2729,9 @@ struct SeqSrc<'a> {
     frames: Vec<FrameSrc>,
     sections: usize,
     notes: usize,
+    /// per note, every frame written around it (closing-order index) and
+    /// the section of that frame it sits in (0 = above the first `else`)
+    note_in: Vec<Vec<(usize, usize)>>,
 }
 
 /// one written alt/opt/loop: the message indexes (source order) and
@@ -2749,6 +2809,7 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
         frames: Vec::new(),
         sections: 0,
         notes: 0,
+        note_in: Vec::new(),
     };
     // open frames as (open index, message mark, note mark, divs so far),
     // LIFO; Top/Div events carry the OPEN index and are rewritten to the
@@ -2818,6 +2879,8 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                 "note" => {
                     last = Last::Note(out.notes);
                     out.notes += 1;
+                    // open indexes for now, settled to closing order below
+                    out.note_in.push(stack.iter().map(|t| (t.0, t.3)).collect());
                     // `Note over A,B:` / `Note left of A:` name lanes at
                     // this line in mermaid; collect plain ids only
                     let rest = line[head.len()..].split(':').next().unwrap_or("");
@@ -2964,6 +3027,11 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
             Last::Div(oi, k) => Last::Div(open2close[oi].unwrap_or(usize::MAX), k),
             other => other,
         };
+    }
+    for chain in &mut out.note_in {
+        for (f, _) in chain.iter_mut() {
+            *f = open2close[*f].unwrap_or(usize::MAX);
+        }
     }
     Ok(out)
 }
@@ -3618,6 +3686,37 @@ fn sequence_raster(
         )?;
         boxes.push(r);
         note_rects.push(r);
+    }
+    // each note must stand strictly inside every frame written around it,
+    // in the very section it was written in, and clear of every other
+    // frame: the crate drops a note that ends an `alt` branch below the
+    // `else` divider, and leaves a frame narrower than a note's lane
+    // (review #3k, 2)
+    for (ni, r) in note_rects.iter().enumerate() {
+        let chain = aud.note_in.get(ni).map(Vec::as_slice).unwrap_or(&[]);
+        for (fi, fr) in &frame_rows {
+            let want = chain
+                .iter()
+                .find(|(si, _)| src_fi.get(*si) == Some(fi))
+                .map(|&(_, k)| k);
+            let inside = fr.x0 < r.x0 && r.x1 < fr.x1 && fr.y0 < r.y0 && r.y1 < fr.y1;
+            let apart = r.x1 < fr.x0 || fr.x1 < r.x0 || r.y1 < fr.y0 || fr.y1 < r.y0;
+            match want {
+                None if apart => {}
+                Some(k) if inside => {
+                    let top = if k == 0 {
+                        Some(fr.y0)
+                    } else {
+                        fr.lines.get(k - 1).copied()
+                    };
+                    let bot = fr.lines.get(k).copied().unwrap_or(fr.y1);
+                    if !top.is_some_and(|t| t < r.y0 && r.y1 < bot) {
+                        return Err(gate("a note drawn in another branch", true));
+                    }
+                }
+                _ => return Err(gate("a note drawn across a frame it is not in", true)),
+            }
+        }
     }
 
     // 5b. activation bars from the SOURCE and the ledger (review #3b

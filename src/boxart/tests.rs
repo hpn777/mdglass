@@ -1435,6 +1435,41 @@ fn frontmatter_cannot_hide_a_title() {
 }
 
 #[test]
+fn boxes_and_notes_stay_where_they_were_written() {
+    // review #3k (1): a node named only by `~~~` inside a subgraph was
+    // drawn outside its frame
+    for src in [
+        "flowchart TD\nsubgraph s1 [One]\nCy ~~~ D\nend\nBee --> D",
+        "flowchart TD\nsubgraph s1 [One]\nAl ~~~ Bee\nend\nBee --- Bee",
+    ] {
+        for cols in [60, 80, 120, 200] {
+            assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
+        }
+    }
+    // (2) a note ending an `alt` branch was drawn below the `else`
+    let src =
+        "sequenceDiagram\nA->>C: m1\nalt f5\nA->>C: m6\nNote over B: n7\nelse f8\nA->>C: m9\nend";
+    for cols in [60, 80, 120, 200] {
+        assert_eq!(terminal_ascii(src, cols, false), None, "@{cols}");
+    }
+    // honest neighbours: members written plainly, a note mid-branch
+    assert!(terminal_ascii(
+        "flowchart TD\nBee --> D\nsubgraph s1 [One]\nCy\nD\nend",
+        100,
+        false
+    )
+    .is_some());
+    let art = terminal_ascii(
+        "sequenceDiagram\nA->>B: m1\nB->>C: m2\nalt f5\nA->>C: m6\nNote over B: n7\nA->>C: m8\nelse f8\nA->>C: m9\nend",
+        100,
+        false,
+    )
+    .expect("mid-branch note fell back");
+    let row = |w: &str| art.iter().position(|l| l.contains(w)).unwrap();
+    assert!(row("m6") < row("n7") && row("n7") < row("m8") && row("m8") < row("[f8]"));
+}
+
+#[test]
 fn a_quoted_note_actor_refuses() {
     // review #3e (3): mermaid gives `Note over "C"` its own lane next
     // to a real C; the crate merges the quoted name into C's lane
