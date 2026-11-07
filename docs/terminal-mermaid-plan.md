@@ -391,9 +391,17 @@ The layout does not depend on width; only rasterization does. Memoize
   fence holding any backslash is read as one run of letters, since a
   `\`-escaped break folds a quoted key across lines (#3f, 5). State
   keeps the canonical arrow audit: its grammar has no open or text
-  link forms. A state line with no arrow must open with a statement
-  keyword or carry a `:` description — a bare `Error` line is a state
-  in mermaid that the crate drops (#3m, 2). Two frames whose walls
+  link forms. State lines draw only from an ALLOWLIST (#3m, 2; #3n):
+  the header, `direction XX`, `hide empty description`, `ID --> ID[ :
+  label]`, `ID : description` (once per id), `state ID {`, `state
+  "Desc" as ID[ {]` (once per id), a bare `state ID` only when a
+  transition names ID too, `}`, and `classDef`/`class` lines within the
+  flowchart keyword grammar. An id is `[*]` or word characters and never
+  a keyword; an aliased id must take part in a transition, and every
+  described or aliased box must read exactly name / `---` / description.
+  Everything else — note blocks (whose text the crate turned into
+  states), `:::` shorthand, `<<choice>>`, concurrency `--`, keyword-named
+  states, `click` — refuses. Two frames whose walls
   share any cell refuse: nested subgraphs given one rect drew as a
   single frame (#3m, 1).
   Only `Note over` draws — and only where a free band exists;
@@ -420,7 +428,9 @@ The layout does not depend on width; only rasterization does. Memoize
   relation line must carry one of the 4×4 crow's-foot pairs and print,
   in order, exactly as written: the list prints the crate's
   decorations, which turned a malformed `|--o{` into `||--o{` ("exactly
-  one"); mirrored and word forms refuse (review #3m, 4).
+  one"); mirrored and word forms refuse (review #3m, 4). A label is one
+  word or one quoted string, printed as written: in `: places order`
+  mermaid labels `places` and draws an entity `order` (#3n, 7).
 - Edge label placement learned to float: rows ±2 and columns ±4 from the
   anchor (SVG hangs labels loosely), preferring one column of air from
   neighbouring labels — falling back to touching rather than refusing.
@@ -468,7 +478,9 @@ The layout does not depend on width; only rasterization does. Memoize
   printing every row would invent a slice (#3c, 7). `pie`/`showData`/
   `title` leading lines are chart furniture, not slices, so `pie title
   Sales: Q1` draws (#3c note); any other line without `:` refuses, since
-  mermaid rejects it and skipping it recomputed every share (#3m, 3).
+  mermaid rejects it and skipping it recomputed every share (#3m, 3),
+  and the `pie` line itself may carry only `showData` and `title`
+  (`pie "A" : 5` dropped the slice, #3n, 8).
 - Honest known limits: `sequenceDiagram` layouts where the crate itself
   overlaps elements (consecutive frames sharing a wall row, self-loop
   stubs fused into notes or foot boxes — `seq_dense` fixture) refuse

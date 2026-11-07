@@ -884,6 +884,177 @@ fn flow_keyword_line_ok(head: &str, line: &str) -> bool {
     }
 }
 
+/// state diagrams draw only from an ALLOWLIST of exact line forms
+/// (review #3n): the crate skips or reinterprets everything else — note
+/// blocks become states, `Moving:::cls` an edge label `::cls`, a bare
+/// `Foo` or `end` line a state it then drops, `A : goes --> nowhere` two
+/// boxes and an edge. Anything outside these forms refuses:
+///   `stateDiagram[-v2]`, `direction XX`, `hide empty description`,
+///   `ID --> ID[ : label]`, `ID : description` (once per ID),
+///   `state ID {`, `state "Desc" as ID[ {]` (once per ID), a bare
+///   `state ID`, `}`, `classDef`/`class` lines within the flowchart
+///   keyword grammar.
+/// An ID is `[*]` or word characters, never a keyword; an aliased or bare
+/// `state` ID must also take part in a transition, and every aliased or
+/// described box must read exactly as written.
+fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
+    const KEYWORDS: [&str; 10] = [
+        "state",
+        "end",
+        "direction",
+        "hide",
+        "note",
+        "class",
+        "classDef",
+        "click",
+        "style",
+        "as",
+    ];
+    let id_ok = |t: &str| {
+        t == "[*]"
+            || (!t.is_empty()
+                && t.chars().all(|c| c.is_alphanumeric() || c == '_')
+                && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(t))
+                && !t.to_ascii_lowercase().starts_with("statediagram"))
+    };
+    let refuse = || gate("a state line outside the drawable grammar", false);
+    let ls: Vec<&str> = src.lines().collect();
+    // a closed frontmatter fence holds YAML (the title gate read it)
+    let fm_end = if ls.first().is_some_and(|l| l.trim() == "---") {
+        ls[1..]
+            .iter()
+            .position(|l| matches!(l.trim(), "---" | "..."))
+            .map(|e| e + 1)
+    } else {
+        None
+    };
+    let mut in_transition: Vec<&str> = Vec::new();
+    let mut described: Vec<(&str, &str)> = Vec::new();
+    let mut aliased: Vec<(&str, &str)> = Vec::new();
+    let mut declared: Vec<&str> = Vec::new();
+    for (no, raw) in ls.iter().enumerate() {
+        if fm_end.is_some_and(|e| no <= e) {
+            continue;
+        }
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if matches!(
+            line,
+            "stateDiagram" | "stateDiagram-v2" | "}" | "hide empty description"
+        ) {
+            continue;
+        }
+        let w: Vec<&str> = line.split_whitespace().collect();
+        match w[0] {
+            "direction" => {
+                if !(w.len() == 2 && matches!(w[1], "TB" | "TD" | "BT" | "LR" | "RL")) {
+                    return Err(refuse());
+                }
+                continue;
+            }
+            "classDef" | "class" => {
+                if line.contains(":::") || !flow_keyword_line_ok(w[0], line) {
+                    return Err(refuse());
+                }
+                continue;
+            }
+            "state" => {
+                let rest = line["state".len()..].trim();
+                let (body, block) = match rest.strip_suffix('{') {
+                    Some(b) => (b.trim(), true),
+                    None => (rest, false),
+                };
+                if let Some(q) = body.strip_prefix('"') {
+                    // state "Desc" as ID
+                    let Some((desc, tail)) = q.split_once('"') else {
+                        return Err(refuse());
+                    };
+                    let t: Vec<&str> = tail.split_whitespace().collect();
+                    if desc.trim().is_empty() || t.len() != 2 || t[0] != "as" || !id_ok(t[1]) {
+                        return Err(refuse());
+                    }
+                    if aliased.iter().any(|(i, _)| *i == t[1]) {
+                        return Err(refuse());
+                    }
+                    aliased.push((t[1], desc));
+                } else if !(id_ok(body) && body != "[*]") {
+                    return Err(refuse());
+                } else if !block {
+                    // a bare `state Foo` draws nothing in mermaid unless a
+                    // transition names Foo too (review #3n, 9)
+                    declared.push(body);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        if line.contains(":::") {
+            return Err(refuse());
+        }
+        if let Some((l, r)) = line.split_once("-->") {
+            let (to, label) = match r.split_once(':') {
+                Some((t, lab)) => (t.trim(), Some(lab.trim())),
+                None => (r.trim(), None),
+            };
+            let (from, to) = (l.trim(), to);
+            if !id_ok(from)
+                || !id_ok(to)
+                || label.is_some_and(|l| l.is_empty() || l.contains("-->"))
+            {
+                return Err(refuse());
+            }
+            in_transition.push(from);
+            in_transition.push(to);
+            continue;
+        }
+        if let Some((id, desc)) = line.split_once(':') {
+            let id = id.trim();
+            if !id_ok(id)
+                || id == "[*]"
+                || desc.trim().is_empty()
+                || described.iter().any(|(i, _)| *i == id)
+            {
+                return Err(refuse());
+            }
+            described.push((id, desc));
+            continue;
+        }
+        return Err(refuse());
+    }
+    // (a described state draws on its own in mermaid, and the label check
+    // below demands its box; an alias or a bare `state ID` does not)
+    for id in aliased.iter().map(|(i, _)| i).chain(declared.iter()) {
+        if !in_transition.contains(id) {
+            return Err(refuse());
+        }
+    }
+    // a box shows its name (the alias, else the id) and, under a `---`
+    // rule, its description: both exactly as written
+    let mut shown: Vec<&str> = aliased.iter().map(|(i, _)| *i).collect();
+    shown.extend(described.iter().map(|(i, _)| *i));
+    for id in shown {
+        let name = aliased
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map_or(id, |(_, d)| *d)
+            .trim();
+        let mut want = vec![name];
+        if let Some((_, d)) = described.iter().find(|(i, _)| *i == id) {
+            want.extend(["---", d.trim()]);
+        }
+        let drawn: Option<Vec<&str>> = layout
+            .nodes
+            .get(id)
+            .map(|n| n.label.lines.iter().map(|l| l.trim()).collect());
+        if drawn.as_deref() != Some(want.as_slice()) {
+            return Err(gate("a state label the source never wrote", true));
+        }
+    }
+    Ok(())
+}
+
 /// the id a `subgraph` line declares: `subgraph s1 [Title]` -> `s1`, and
 /// `subgraph "s 2"` -> `s 2` (mermaid unquotes it, so a bare `s2` line
 /// names it, review #3h, 1)
@@ -1453,6 +1624,7 @@ fn graph_raster(
     // no open/dotted/text link forms, so the canonical arrow tokens are
     // enough to demand every named id and arrow survive the layout
     if kind == DiagramKind::State {
+        state_grammar(src, layout)?;
         const CANON: [&str; 4] = ["-.->", "==>", "-->", "~~~"];
         let mut arrows = 0usize;
         let mut ids: Vec<&str> = Vec::new();
@@ -1484,32 +1656,6 @@ fn graph_raster(
             }
             let count = segs.len(); // arrows == splits
             if count == 0 {
-                // a line with no arrow must be a statement the art models;
-                // a bare `Error` line is a state in mermaid that the crate
-                // drops (review #3m, 2)
-                let head = line.split_whitespace().next().unwrap_or("");
-                let known = matches!(
-                    head,
-                    "stateDiagram"
-                        | "stateDiagram-v2"
-                        | "state"
-                        | "direction"
-                        | "note"
-                        | "end"
-                        | "classDef"
-                        | "class"
-                        | "hide"
-                        | "title"
-                        | "accTitle"
-                        | "accDescr"
-                        | "---"
-                        | "--"
-                        | "}"
-                        | "{"
-                ) || line.contains(':');
-                if !known {
-                    return Err(gate("a state line the parser may skip", false));
-                }
                 continue;
             }
             segs.push(rest);
@@ -1599,7 +1745,7 @@ fn graph_raster(
         // #3m, 4); word forms (`one or more`) refuse — over-refusal only
         const LEFT: [&str; 4] = ["|o", "||", "}o", "}|"];
         const RIGHT: [&str; 4] = ["o|", "||", "o{", "|{"];
-        let mut rels: Vec<(&str, &str, &str)> = Vec::new();
+        let mut rels: Vec<(&str, &str, &str, &str)> = Vec::new();
         let mut depth = 0i32;
         let mut fence = false;
         for raw in src.lines() {
@@ -1638,7 +1784,19 @@ fn graph_raster(
                 return Err(gate("an ER relation the list may misprint", false));
             };
             let from = line[..sep_at - 2].trim();
-            let to = line[sep_at + 4..].split(':').next().unwrap_or("").trim();
+            let (to, label) = line[sep_at + 4..].split_once(':').unwrap_or(("", ""));
+            let (to, label) = (to.trim(), label.trim());
+            // the label is ONE word or ONE quoted string: in `: places
+            // order` mermaid labels `places` and draws an entity `order`
+            // the list would drop (review #3n, 7)
+            // (the list prints a quoted label verbatim, quotes and all)
+            let ok = match label.strip_prefix('"') {
+                Some(q) => q.strip_suffix('"').is_some_and(|t| !t.contains('"')),
+                None => !label.is_empty() && !label.contains(char::is_whitespace),
+            };
+            let Some(label) = ok.then_some(label) else {
+                return Err(gate("an ER relation the list may misprint", false));
+            };
             if from.is_empty()
                 || to.is_empty()
                 || from.contains(char::is_whitespace)
@@ -1646,12 +1804,12 @@ fn graph_raster(
             {
                 return Err(gate("an ER relation the list may misprint", false));
             }
-            rels.push((from, tok, to));
+            rels.push((from, tok, to, label));
         }
         if rels.len() != layout.edges.len() {
             return Err(gate("an ER relation the list may misprint", false));
         }
-        for (e, (a, tok, b)) in layout.edges.iter().zip(&rels) {
+        for (e, (a, tok, b, label)) in layout.edges.iter().zip(&rels) {
             let sep = if matches!(e.style, mermaid_rs_renderer::ir::EdgeStyle::Dotted) {
                 ".."
             } else {
@@ -1663,7 +1821,12 @@ fn graph_raster(
                 sep,
                 er_card(e.end_decoration, false)
             );
-            if e.from != *a || e.to != *b || printed != *tok {
+            let verb = e
+                .label
+                .as_ref()
+                .map(|l| l.lines.join(" "))
+                .unwrap_or_default();
+            if e.from != *a || e.to != *b || printed != *tok || verb.trim() != label.trim() {
                 return Err(gate("an ER relation the list may misprint", false));
             }
         }
@@ -4078,7 +4241,24 @@ fn pie_list(src: &str, layout: &Layout, cols: usize) -> Result<Vec<String>, Fail
         // chart furniture, so `pie title Sales: Q1` must not be mistaken
         // for a slice line (over-refusal, review #3c note)
         let head = line.split_whitespace().next().unwrap_or("");
-        if matches!(head, "pie" | "showData" | "title") {
+        if head == "pie" {
+            // the header carries only `showData` and `title ..`: a slice
+            // written on it (`pie "A" : 5`) is dropped by the crate and
+            // every share recomputed (review #3n, 8)
+            let rest = line["pie".len()..].trim_start();
+            let rest = rest
+                .strip_prefix("showData")
+                .map(str::trim_start)
+                .unwrap_or(rest);
+            let titled = rest
+                .strip_prefix("title")
+                .is_some_and(|t| t.is_empty() || t.starts_with(char::is_whitespace));
+            if !(rest.is_empty() || titled) {
+                return Err(gate("a pie line the parser may not understand", false));
+            }
+            continue;
+        }
+        if line == "showData" || head == "title" {
             continue;
         }
         // any other line is a slice: mermaid rejects one without `:`, and

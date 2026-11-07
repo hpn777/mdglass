@@ -1492,6 +1492,31 @@ fn boxes_and_notes_stay_where_they_were_written() {
     ] {
         assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
     }
+    // review #3n: state draws from an allowlist; pie headers carry no
+    // slice; ER labels are one word or one quoted string
+    for src in [
+        "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Busy : job\n  note right of Busy\n    Warning: may block\n  end note",
+        "stateDiagram-v2\n  [*] --> Still\n  Still --> Moving:::movement\n  classDef movement font-style:italic",
+        "stateDiagram-v2\n  A --> B\n  end",
+        "stateDiagram-v2\n  A --> B\n  click B \"https://x.org\" \"tip\"",
+        "stateDiagram-v2\n  A --> B\n  A : goes --> nowhere",
+        "stateDiagram-v2\n  A --> B\n  state Foo",
+        "stateDiagram-v2\n  [*] --> A\n  state \"x\" as A\n  state \"y\" as A",
+        "erDiagram\n  CUSTOMER ||--o{ ORDER : places order",
+        "pie\n  pie \"A\" : 5\n  \"B\" : 5",
+    ] {
+        for cols in [60, 100, 200] {
+            assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
+        }
+    }
+    for src in [
+        "erDiagram\n  CUSTOMER ||--o{ ORDER : \"places order\"",
+        "erDiagram\n  A ||--o{ B : \"has: many\"",
+        "pie showData title Pets\n  \"A\" : 5\n  \"B\" : 5",
+        "stateDiagram-v2\n  direction LR\n  [*] --> A\n  A --> B: go\n  B : busy\n  B --> [*]",
+    ] {
+        assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
+    }
     // honest neighbours: members written plainly, a note mid-branch
     assert!(terminal_ascii(
         "flowchart TD\nBee --> D\nsubgraph s1 [One]\nCy\nD\nend",
