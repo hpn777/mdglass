@@ -259,7 +259,11 @@ pub(crate) fn insert_layout(text: &str, variant: usize, built: Option<Layout>) {
                 c.remove(&k);
             }
             if c.len() > CACHE_MAX {
-                c.clear(); // one live view beyond the cap: nothing is stale
+                // soft cap: never evict what the live view draws. Dropping
+                // a decided-but-shown fence would re-arm it, and the next
+                // insert would evict its replacement - the cycle the
+                // generation exists to prevent. Memory instead grows with
+                // what the session opened (~100 KB per layout).
             }
         }
         let e = c.entry(text.to_string()).or_default();

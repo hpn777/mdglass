@@ -197,13 +197,17 @@ The layout does not depend on width; only rasterization does. Memoize
   the headroom a 2 MB worker default lacks) runs `boxart::engine` per
   `(src, variant)` job and posts the plain-data `Layout` back through mpsc
   (compile-time `Send` assert); the UI thread inserts `Rc`s into the
-  thread-local cache, re-probes, and dispatches the next variant — one job
-  per idle tick, `next_warm` walking the exact `decide` ladder so dispatch
-  never re-derives it. Current file first, nearest the viewport first.
-  Quit never joins: process exit reaps the worker. `CACHE_MAX` 512 with
-  generation eviction (a rerender stamps what it draws; overflow drops
-  only un-stamped entries) kills the re-warm cycle; if the thread cannot
-  spawn, art simply never warms and fences honestly stay source.
+  thread-local cache, re-probes, and dispatches the next variant;
+  `next_warm` walks the exact `decide` ladder so dispatch never re-derives
+  it. Exactly one job in flight (priority is re-decided after every
+  arrival, harvest+dispatch share a tick), queued current-file first, then
+  nearest the viewport. Quit never joins: process exit reaps the worker.
+  `CACHE_MAX` 512 is a soft cap with generation eviction: a rerender
+  stamps what it draws, overflow drops only un-stamped entries, and live
+  entries are never evicted (dropping one re-arms it — the exact cycle the
+  generation prevents), so memory grows with what the session opened. If
+  the thread cannot spawn, art simply never warms and fences honestly
+  stay source.
   `print_plain` stays synchronous (batch output may wait);
   `--no-diagrams` is the opt-out.
 - `rerender()` preserves the reading place (nearest-copy anchor of the

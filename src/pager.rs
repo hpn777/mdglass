@@ -220,7 +220,7 @@ impl Pager {
         let plain = !self.color;
         let cfg = Cfg { diagrams: true, ..Cfg::new(self.color, self.width, self.urls) };
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        let mut armed: Vec<(i64, usize, (String, usize))> = Vec::new(); // (distance, order, key)
+        let mut armed: Vec<(i64, i64, usize, (String, usize))> = Vec::new(); // (file rank, distance, order, key)
         let n = self.docs.len().max(1);
         // the file under read comes first: a multi-second diagram in a file
         // nobody is looking at must not delay the one under the eyes
@@ -243,11 +243,11 @@ impl Pager {
                 let pos = d.content.find(&key.0).unwrap_or(0);
                 let line = d.content[..pos].bytes().filter(|b| *b == b'\n').count();
                 let dist = ((line as f64 / src_lines as f64 - frac_top).abs() * 1000.0) as i64;
-                armed.push((dist, i, key));
+                armed.push((k as i64, dist, i, key));
             }
         }
-        armed.sort_by_key(|(dist, order, _)| (*dist, *order));
-        self.warm_q.extend(armed.into_iter().map(|(_, _, key)| key));
+        armed.sort_by_key(|(rank, dist, order, _)| (*rank, *dist, *order));
+        self.warm_q.extend(armed.into_iter().map(|(_, _, _, key)| key));
     }
 
     /// One worker for the whole session: the layout engine runs only on
@@ -297,28 +297,32 @@ impl Pager {
         got
     }
 
-    /// Hand the worker the next variant each queued fence waits on, one job
-    /// per tick. `next_warm` walks the very ladder `terminal_ascii` walks,
-    /// so a dispatch always answers what the probe asked (the queue
-    /// converges: every arrival marks one slot tried, shrinking the unknown
-    /// set by at least that fence's dependence on it).
+    /// Hand the worker one job: `next_warm` walks the very ladder
+    /// `terminal_ascii` walks, so a dispatch always answers what the probe
+    /// asked, and every arrival marks one slot tried, shrinking the unknown
+    /// set (the queue converges). One job in flight at a time means
+    /// priority is re-decided after every arrival instead of frozen at send
+    /// time, and the queue walk - with its rasters - costs nothing while
+    /// the worker is busy. Harvest + dispatch share one tick, so the
+    /// worker idles at most 15 ms between jobs.
     fn dispatch(&mut self) {
+        if !self.inflight.is_empty() {
+            return;
+        }
         let Some(tx) = self.job_tx.clone() else { return };
         let plain = !self.color;
-        let mut turns = self.warm_q.len();
-        while turns > 0 {
-            turns -= 1;
-            let Some((src, cols)) = self.warm_q.pop_front() else { break };
-            match boxart::next_warm(&src, cols, plain) {
-                Some(variant) if self.inflight.insert((src.clone(), variant)) => {
-                    if tx.send((src, variant)).is_err() {
-                        self.job_tx = None; // worker lost: stay honestly on source
-                        return;
-                    }
-                    return; // one job per tick; arrivals wake the next
+        while let Some((src, cols)) = self.warm_q.pop_front() {
+            if let Some(variant) = boxart::next_warm(&src, cols, plain) {
+                if tx.send((src.clone(), variant)).is_err() {
+                    self.job_tx = None; // worker lost: stay honestly on source
+                    self.warm_q.push_front((src, cols));
+                    return;
                 }
-                _ => self.warm_q.push_back((src, cols)), // in flight, or decided since queueing
+                self.inflight.insert((src, variant));
+                return;
             }
+            // decided since queueing (arrival for a sibling variant): drop;
+            // a still-Unknown fence re-arms at the next rebuild
         }
     }
 
