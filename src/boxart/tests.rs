@@ -1532,6 +1532,10 @@ fn boxes_and_notes_stay_where_they_were_written() {
         }
     }
     assert_eq!(terminal_ascii(fan, 80, false), None);
+    // review #3r: the same swap stretched over a shared run (`──┤` ..
+    // `├──►`): "fail" and "POST" merged, then split to Billing/Storage
+    let run = "flowchart LR\n    Client --> Auth\n    Auth -->|fail| Storage\n    Auth -->|POST| Billing\n    Auth -->|500| DB\n    Auth -->|404| Queue\n    Auth -->|invalid| Review";
+    assert_eq!(terminal_ascii(run, 80, false), None);
     // the mermaid.live default at 60 cols put two heads back to back
     // (`iPhone ┐◄►┌ Car`); it refuses there and draws from 70
     let xmas = "flowchart TD\n    A[Christmas] -->|Get money| B(Go shopping)\n    B --> C{Let me think}\n    C -->|One| D[Laptop]\n    C -->|Two| E[iPhone]\n    C -->|Three| F[fa:fa-car Car]";

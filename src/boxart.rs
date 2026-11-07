@@ -2276,6 +2276,65 @@ fn graph_raster(
                 if turn_turn {
                     return Err(gate("two routes merge into a shape no source draws", true));
                 }
+                // the same swap stretched over a run of shared cells away
+                // from the shared box (`┬─┴`, `┤`..`├`): each route turns
+                // between where it joins the run and where it leaves, so the
+                // straight reading hands each tail to the other route and
+                // its label with it (review #3r)
+                let same_pair = prev.from == from && prev.to == to;
+                let at_end = |c: &(i32, i32)| {
+                    (prev.from == from && end_has(from, c.0, c.1))
+                        || (prev.to == to && end_has(to, c.0, c.1))
+                };
+                let near_end = |c: &(i32, i32)| {
+                    [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+                        .iter()
+                        .any(|d| at_end(&(c.0 + d.0, c.1 + d.1)))
+                };
+                let mut seen: HashSet<(i32, i32)> = HashSet::new();
+                for &c0 in &shared {
+                    if same_pair || seen.contains(&c0) {
+                        continue;
+                    }
+                    let mut run = vec![c0];
+                    seen.insert(c0);
+                    let mut k = 0;
+                    while k < run.len() {
+                        let (x, y) = run[k];
+                        for n in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)] {
+                            if prev.cells.contains(&n) && cells.contains(&n) && seen.insert(n) {
+                                run.push(n);
+                            }
+                        }
+                        k += 1;
+                    }
+                    if run.len() < 2 || run.iter().any(near_end) {
+                        continue;
+                    }
+                    // the arms each route sticks out of the run: two
+                    // opposite arms = it crosses straight, anything else
+                    // = it turns inside the run
+                    let straight = |d: &HashMap<(i32, i32), u8>| {
+                        let mut outs: Vec<u8> = Vec::new();
+                        for &(x, y) in &run {
+                            let m = d.get(&(x, y)).copied().unwrap_or(0);
+                            for (bit, n) in [
+                                (M_N, (x, y - 1)),
+                                (M_E, (x + 1, y)),
+                                (M_S, (x, y + 1)),
+                                (M_W, (x - 1, y)),
+                            ] {
+                                if m & bit != 0 && !run.contains(&n) {
+                                    outs.push(bit);
+                                }
+                            }
+                        }
+                        outs.len() == 2 && (outs[0] | outs[1] == M_NS || outs[0] | outs[1] == M_EW)
+                    };
+                    if !straight(&dirs) && !straight(&prev.dirs) {
+                        return Err(gate("two routes merge into a shape no source draws", true));
+                    }
+                }
             }
             if !shares {
                 let cross = shared.iter().all(|c| {
@@ -2386,6 +2445,28 @@ fn graph_raster(
             *drawn.last_mut().unwrap().heads.entry((hx, hy)).or_default() |=
                 if start { 1 } else { 2 };
         }
+    }
+
+    // a `┼` reads as two straight lines (see the cross-edge loop), so one
+    // that three routes build without a straight pair - a stem splitting
+    // left, right and on (`◄─┼►`) - draws a line between the two side
+    // boxes that no source wrote (review #3r)
+    // (an arrowhead cell shows the head, not the junction)
+    let mut meet: HashMap<(i32, i32), (u8, bool, bool, usize)> = HashMap::new();
+    for d in &drawn {
+        for (c, &m) in &d.dirs {
+            let e = meet.entry(*c).or_default();
+            e.0 |= m;
+            e.1 |= m == M_NS;
+            e.2 |= m == M_EW;
+            e.3 += 1;
+        }
+    }
+    let head_cell = |c: &(i32, i32)| drawn.iter().any(|d| d.heads.contains_key(c));
+    if meet.iter().any(|(c, e)| {
+        e.0 == M_ALL && e.3 >= 2 && !(e.1 && e.2) && node_at(c.0, c.1).is_none() && !head_cell(c)
+    }) {
+        return Err(gate("two routes merge into a shape no source draws", true));
     }
 
     // 3. nodes: opaque boxes, centered multi-line labels (never ellipsized)
