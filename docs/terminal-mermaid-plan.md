@@ -391,17 +391,21 @@ The layout does not depend on width; only rasterization does. Memoize
   fence holding any backslash is read as one run of letters, since a
   `\`-escaped break folds a quoted key across lines (#3f, 5). State
   keeps the canonical arrow audit: its grammar has no open or text
-  link forms. State lines draw only from an ALLOWLIST (#3m, 2; #3n):
-  the header, `direction XX`, `hide empty description`, `ID --> ID[ :
-  label]`, `ID : description` (once per id), `state ID {`, `state
-  "Desc" as ID[ {]` (once per id), a bare `state ID` only when a
-  transition names ID too, `}`, and `classDef`/`class` lines within the
-  flowchart keyword grammar. An id is `[*]` or word characters and never
-  a keyword; an aliased id must take part in a transition, and every
-  described or aliased box must read exactly name / `---` / description.
-  Everything else — note blocks (whose text the crate turned into
-  states), `:::` shorthand, `<<choice>>`, concurrency `--`, keyword-named
-  states, `click` — refuses. Two frames whose walls
+  link forms. State lines draw only from an ALLOWLIST (#3m, 2; #3n;
+  #3o): the header, `direction XX`, `hide empty description`, `ID -->
+  ID[ : label]` with no arrow-like text in the label (the crate tries
+  its arrow tokens in list order, so `done <-- ok` split the line into
+  invented boxes), `state ID {` never left empty, `state "Desc" as ID[
+  {]` (once per id), a bare `state ID` only when a transition names ID
+  too, `}`, and `classDef`/`class` lines within the flowchart keyword
+  grammar. No line may hold a `\` (the crate breaks a literal `\n`). An
+  id is `[*]` or word characters and never a keyword; an aliased id
+  must take part in a transition and its box read exactly as written.
+  Everything else refuses — `ID : description` (mermaid shows the
+  description without the id the crate prints above it, and drops it
+  on composites), note blocks (whose text the crate turned into
+  states), `:::` shorthand, `<<choice>>`, concurrency `--`,
+  keyword-named states, `click`. Two frames whose walls
   share any cell refuse: nested subgraphs given one rect drew as a
   single frame (#3m, 1).
   Only `Note over` draws — and only where a free band exists;

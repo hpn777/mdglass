@@ -1488,7 +1488,7 @@ fn boxes_and_notes_stay_where_they_were_written() {
     for src in [
         "erDiagram\n  A ||--o{B:v",
         "erDiagram\n  A }|..|{ B : v\n  B |o--o| C : w",
-        "stateDiagram-v2\n  state \"Long name\" as L\n  [*] --> L\n  L : waits\n  L --> [*]",
+        "stateDiagram-v2\n  state \"Long name\" as L\n  [*] --> L\n  L --> [*]",
     ] {
         assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
     }
@@ -1504,6 +1504,14 @@ fn boxes_and_notes_stay_where_they_were_written() {
         "stateDiagram-v2\n  [*] --> A\n  state \"x\" as A\n  state \"y\" as A",
         "erDiagram\n  CUSTOMER ||--o{ ORDER : places order",
         "pie\n  pie \"A\" : 5\n  \"B\" : 5",
+        // review #3o: arrow-like label text, a literal `\n`, descriptions
+        // (mermaid shows them without the id the crate prints) and an
+        // empty composite
+        "stateDiagram-v2\n  [*] --> Busy\n  Busy --> Idle : done <-- ok",
+        "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Done : finish\\nup",
+        "stateDiagram-v2\n  [*] --> s2\n  s2 : This is a state description",
+        "stateDiagram-v2\n  [*] --> C\n  state C {\n    [*] --> D\n  }\n  C : desc",
+        "stateDiagram-v2\n  A --> B\n  state C {\n  }",
     ] {
         for cols in [60, 100, 200] {
             assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
@@ -1513,7 +1521,7 @@ fn boxes_and_notes_stay_where_they_were_written() {
         "erDiagram\n  CUSTOMER ||--o{ ORDER : \"places order\"",
         "erDiagram\n  A ||--o{ B : \"has: many\"",
         "pie showData title Pets\n  \"A\" : 5\n  \"B\" : 5",
-        "stateDiagram-v2\n  direction LR\n  [*] --> A\n  A --> B: go\n  B : busy\n  B --> [*]",
+        "stateDiagram-v2\n  direction LR\n  [*] --> A\n  A --> B: go\n  B --> [*]",
     ] {
         assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
     }

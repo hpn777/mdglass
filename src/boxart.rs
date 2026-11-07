@@ -890,13 +890,14 @@ fn flow_keyword_line_ok(head: &str, line: &str) -> bool {
 /// `Foo` or `end` line a state it then drops, `A : goes --> nowhere` two
 /// boxes and an edge. Anything outside these forms refuses:
 ///   `stateDiagram[-v2]`, `direction XX`, `hide empty description`,
-///   `ID --> ID[ : label]`, `ID : description` (once per ID),
-///   `state ID {`, `state "Desc" as ID[ {]` (once per ID), a bare
+///   `ID --> ID[ : label]` (no arrow-like text in the label), `state ID
+///   {` (never empty), `state "Desc" as ID[ {]` (once per ID), a bare
 ///   `state ID`, `}`, `classDef`/`class` lines within the flowchart
-///   keyword grammar.
+///   keyword grammar; no line holds a `\`.
 /// An ID is `[*]` or word characters, never a keyword; an aliased or bare
-/// `state` ID must also take part in a transition, and every aliased or
-/// described box must read exactly as written.
+/// `state` ID must also take part in a transition, and an aliased box
+/// must read exactly as written. `ID : description` refuses: mermaid
+/// shows the description WITHOUT the id the crate prints above it.
 fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
     const KEYWORDS: [&str; 10] = [
         "state",
@@ -929,7 +930,9 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
         None
     };
     let mut in_transition: Vec<&str> = Vec::new();
-    let mut described: Vec<(&str, &str)> = Vec::new();
+    // per open `state X {` block: has it any statement yet? an empty one
+    // is a mermaid render error the art would silently drop (#3o, 5)
+    let mut filled: Vec<bool> = Vec::new();
     let mut aliased: Vec<(&str, &str)> = Vec::new();
     let mut declared: Vec<&str> = Vec::new();
     for (no, raw) in ls.iter().enumerate() {
@@ -940,11 +943,25 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
         if line.is_empty() || line.starts_with("%%") {
             continue;
         }
+        if line == "}" {
+            if filled.pop() != Some(true) {
+                return Err(refuse());
+            }
+            continue;
+        }
         if matches!(
             line,
-            "stateDiagram" | "stateDiagram-v2" | "}" | "hide empty description"
+            "stateDiagram" | "stateDiagram-v2" | "hide empty description"
         ) {
             continue;
+        }
+        if let Some(f) = filled.last_mut() {
+            *f = true;
+        }
+        // the crate turns a literal `\n` into a line break mermaid never
+        // draws (review #3o, 2)
+        if line.contains('\\') {
+            return Err(refuse());
         }
         let w: Vec<&str> = line.split_whitespace().collect();
         match w[0] {
@@ -986,6 +1003,9 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
                     // transition names Foo too (review #3n, 9)
                     declared.push(body);
                 }
+                if block {
+                    filled.push(false);
+                }
                 continue;
             }
             _ => {}
@@ -999,56 +1019,42 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
                 None => (r.trim(), None),
             };
             let (from, to) = (l.trim(), to);
-            if !id_ok(from)
-                || !id_ok(to)
-                || label.is_some_and(|l| l.is_empty() || l.contains("-->"))
-            {
+            // the crate tries its arrow tokens in LIST order, not by
+            // position: `A --> B : done <-- ok` split at `<--` into two
+            // invented boxes (review #3o, 1). No arrow-like text in labels
+            let arrowish = |l: &str| {
+                ["--", "<-", "->", "==", "~~", "-."]
+                    .iter()
+                    .any(|t| l.contains(t))
+            };
+            if !id_ok(from) || !id_ok(to) || label.is_some_and(|l| l.is_empty() || arrowish(l)) {
                 return Err(refuse());
             }
             in_transition.push(from);
             in_transition.push(to);
             continue;
         }
-        if let Some((id, desc)) = line.split_once(':') {
-            let id = id.trim();
-            if !id_ok(id)
-                || id == "[*]"
-                || desc.trim().is_empty()
-                || described.iter().any(|(i, _)| *i == id)
-            {
-                return Err(refuse());
-            }
-            described.push((id, desc));
-            continue;
-        }
+        // `ID : description` refuses: mermaid shows the description
+        // ALONE where the crate titles it with the id, and on a composite
+        // the crate drops it (review #3o, 3/4)
         return Err(refuse());
     }
-    // (a described state draws on its own in mermaid, and the label check
-    // below demands its box; an alias or a bare `state ID` does not)
+    if !filled.is_empty() {
+        return Err(refuse());
+    }
     for id in aliased.iter().map(|(i, _)| i).chain(declared.iter()) {
         if !in_transition.contains(id) {
             return Err(refuse());
         }
     }
-    // a box shows its name (the alias, else the id) and, under a `---`
-    // rule, its description: both exactly as written
-    let mut shown: Vec<&str> = aliased.iter().map(|(i, _)| *i).collect();
-    shown.extend(described.iter().map(|(i, _)| *i));
-    for id in shown {
-        let name = aliased
-            .iter()
-            .find(|(i, _)| *i == id)
-            .map_or(id, |(_, d)| *d)
-            .trim();
-        let mut want = vec![name];
-        if let Some((_, d)) = described.iter().find(|(i, _)| *i == id) {
-            want.extend(["---", d.trim()]);
-        }
+    // an aliased box shows the alias exactly as written
+    for (id, name) in &aliased {
+        let want = [name.trim()];
         let drawn: Option<Vec<&str>> = layout
             .nodes
-            .get(id)
+            .get(*id)
             .map(|n| n.label.lines.iter().map(|l| l.trim()).collect());
-        if drawn.as_deref() != Some(want.as_slice()) {
+        if drawn.as_deref() != Some(&want[..]) {
             return Err(gate("a state label the source never wrote", true));
         }
     }
