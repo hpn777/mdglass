@@ -1326,6 +1326,23 @@ fn mermaid_only_boxes_and_memberships_refuse() {
     ] {
         assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
     }
+    // review #3h (1): a QUOTED subgraph id is still named by a bare line
+    // review #3h (2): `Click` is a node to mermaid (keywords are case
+    // exact) but a click line to the crate, which drops it
+    for src in [
+        "flowchart LR\n  subgraph s1\n    B\n    s2\n  end\n  subgraph \"s2\"\n    A\n  end",
+        "flowchart LR\n  A --> B\n  Click --> C",
+        "flowchart LR\n  A --> B\n  CLICK --> C",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
+    // ids that merely START with a keyword are plain ids
+    assert!(terminal_ascii(
+        "flowchart LR\n  A --> endpoint\n  clickable --> A",
+        100,
+        false
+    )
+    .is_some());
     // styling a written node, before or after it is written, and `class`
     // or `click` on any id create no box in mermaid: these still draw
     for src in [

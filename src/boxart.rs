@@ -787,18 +787,15 @@ fn flow_shape_tail(s: &str) -> Option<(&str, Option<&str>)> {
     }
 }
 
-/// One flowchart statement, fully tokenized (review #3e, 1/4): id members
-/// (shapes, `@{}`, `:::` classes) separated by link tokens, `&` fans and
-/// the text forms `-- t -->`, `-. t .->`, `== t ==>`. Any word the
-/// tokenizer cannot place — `A --> B C --> D`, `A[a] B[b]`, `A x--> "b c"`
-/// — or an `x`/`o` arrow end returns None, and the diagram refuses: a
-/// statement mermaid rejects may not draw as confident art that drops
-/// written words.
-/// the id a `subgraph` line declares: `subgraph s1 [Title]` -> `s1`
+/// the id a `subgraph` line declares: `subgraph s1 [Title]` -> `s1`, and
+/// `subgraph "s 2"` -> `s 2` (mermaid unquotes it, so a bare `s2` line
+/// names it, review #3h, 1)
 fn flow_subgraph_id(line: &str) -> &str {
-    line["subgraph".len()..]
-        .trim_start()
-        .split(|c: char| c.is_whitespace() || c == '[')
+    let t = line["subgraph".len()..].trim_start();
+    if let Some(r) = t.strip_prefix('"') {
+        return r.split('"').next().unwrap_or("");
+    }
+    t.split(|c: char| c.is_whitespace() || c == '[')
         .next()
         .unwrap_or("")
 }
@@ -811,6 +808,13 @@ type FlowStmt<'a> = (
     Vec<(&'a str, &'a str)>,
 );
 
+/// One flowchart statement, fully tokenized (review #3e, 1/4): id members
+/// (shapes, `@{}`, `:::` classes) separated by link tokens, `&` fans and
+/// the text forms `-- t -->`, `-. t .->`, `== t ==>`. Any word the
+/// tokenizer cannot place — `A --> B C --> D`, `A[a] B[b]`, `A x--> "b c"`
+/// — or an `x`/`o` arrow end returns None, and the diagram refuses: a
+/// statement mermaid rejects may not draw as confident art that drops
+/// written words.
 fn flow_stmt(line: &str) -> Option<FlowStmt<'_>> {
     let mut ids: Vec<&str> = Vec::new();
     let mut labels: Vec<(&str, &str)> = Vec::new();
@@ -1047,18 +1051,19 @@ fn graph_raster(
     // a parser that swallows statement tails; every named id must then
     // survive in the layout and the edge count must cover every arrow
     if kind == DiagramKind::Flowchart {
-        const SKIP: [&str; 11] = [
+        // mermaid's keywords match in THIS spelling only: `Click --> C`
+        // is a node named Click (review #3h, 2)
+        const SKIP: [&str; 10] = [
             "flowchart",
             "graph",
             "subgraph",
             "end",
             "direction",
             "class",
-            "classdef",
+            "classDef",
             "style",
             "click",
-            "linkstyle",
-            "accordion",
+            "linkStyle",
         ];
         let mut ids: Vec<&str> = Vec::new();
         let mut pairs: Vec<(&str, &str)> = Vec::new();
@@ -1066,16 +1071,6 @@ fn graph_raster(
         let mut open: Vec<&str> = Vec::new();
         let mut nested: Vec<&str> = Vec::new();
         let mut styled: Vec<&str> = Vec::new();
-        let declared: Vec<&str> = src
-            .lines()
-            .map(str::trim)
-            .filter(|l| {
-                l.split_whitespace()
-                    .next()
-                    .is_some_and(|h| h.eq_ignore_ascii_case("subgraph"))
-            })
-            .map(flow_subgraph_id)
-            .collect();
         // a closed frontmatter block holds YAML keys, not statements —
         // `config: { theme: dark }` must keep drawing (#3e honest set)
         let ls: Vec<&str> = src.lines().collect();
@@ -1087,19 +1082,39 @@ fn graph_raster(
         } else {
             None
         };
+        // statement lines only: frontmatter and comments declare nothing
+        let stmt = |no: usize, raw: &str| {
+            let line = raw.trim();
+            !(fm_end.is_some_and(|e| no <= e)
+                || line.is_empty()
+                || line.starts_with("%%")
+                || line.starts_with("---"))
+        };
+        let declared: Vec<&str> = ls
+            .iter()
+            .enumerate()
+            .filter(|(no, raw)| stmt(*no, raw))
+            .map(|(_, raw)| raw.trim())
+            .filter(|l| l.split_whitespace().next() == Some("subgraph"))
+            .map(flow_subgraph_id)
+            .collect();
         for (no, raw) in ls.iter().enumerate() {
-            if fm_end.is_some_and(|e| no <= e) {
+            if !stmt(no, raw) {
                 continue;
             }
             let line = raw.trim();
-            if line.is_empty() || line.starts_with("%%") || line.starts_with("---") {
-                continue;
+            let head = line.split_whitespace().next().unwrap_or("");
+            // a keyword in the wrong case is an ID to mermaid but a
+            // keyword to the crate, which then drops it: refuse
+            if !SKIP.contains(&head)
+                && SKIP.iter().any(|k| {
+                    k.eq_ignore_ascii_case(
+                        head.split(['[', '(', '{', '@', ':']).next().unwrap_or(""),
+                    )
+                })
+            {
+                return Err(gate("a keyword spelled as an id", false));
             }
-            let head = line
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
             // subgraph nesting: an edge landing on a subgraph INSIDE another
             // subgraph routes to strokes no element owns (review #3f, 6)
             if head == "subgraph" {
@@ -1125,7 +1140,7 @@ fn graph_raster(
                 styled.push(target);
                 continue;
             }
-            if SKIP.contains(&head.as_str()) {
+            if SKIP.contains(&head) {
                 continue;
             }
             let Some((mut line_ids, line_pairs, line_labels)) = flow_stmt(line) else {

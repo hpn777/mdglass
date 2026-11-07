@@ -350,7 +350,11 @@ The layout does not depend on width; only rasterization does. Memoize
   another subgraph — mermaid's other way to nest one — refuses too,
   since the crate draws it beside its parent (#3g, 1); a `style` line
   on an id no statement wrote, or on a comma list, refuses because
-  mermaid draws a box for it (`class`/`click` create none, #3g, 2); and two edges between the same
+  mermaid draws a box for it (`class`/`click` create none, #3g, 2);
+  a quoted subgraph id counts unquoted, since `s2` names `"s2"` (#3h,
+  1); and keywords match in mermaid's exact case only — `Click --> C`
+  is a node there, a click line to the crate, so a keyword written in
+  another case refuses (#3h, 2); and two edges between the same
   pair of boxes must each keep cells of their own outside the boxes,
   or the raster has drawn two edges as one arrow (#3f, 1) — nor may
   they share one arrowhead. Every visible box must also SAY what the
