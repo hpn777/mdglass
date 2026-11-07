@@ -1890,21 +1890,50 @@ fn band_clear(g: &Grid, r: Rect) -> bool {
 struct SeqSrc<'a> {
     msgs: Vec<(&'a str, &'a str)>,
     events: Vec<SeqEvt<'a>>,
-    aliases: Vec<(&'a str, &'a str)>,
-    frames: usize,
+    frames: Vec<FrameSrc>,
     sections: usize,
+    notes: usize,
+}
+
+/// one written alt/opt/loop: the message indexes (source order) and
+/// notes it holds and its else-divider count; the raster must find a
+/// layout frame holding exactly that, or the crate has moved the frame
+/// over messages the source placed outside it (review #3c, 1)
+struct FrameSrc {
+    lo: usize,
+    hi: usize,
+    divs: usize,
+    notes: usize,
+}
+
+/// the last VISIBLE statement a source line followed: activation bars
+/// start and stop at that statement's drawn row, because mermaid anchors
+/// them at the current position — after any note, frame top, divider or
+/// floor the source wrote in between — never at the previous message
+/// alone (review #3c, 4)
+#[derive(Clone, Copy)]
+enum Last {
+    None,
+    Msg(usize),
+    Note(usize),
+    /// a frame's top wall, by index in CLOSING order
+    Top(usize),
+    /// its k-th divider
+    Div(usize, usize),
+    /// its floor
+    Floor(usize),
 }
 
 #[derive(Clone, Copy)]
 enum SeqEvt<'a> {
     Start {
         p: &'a str,
-        after: usize,
+        last: Last,
         incl: Option<usize>,
     },
     End {
         p: &'a str,
-        after: usize,
+        last: Last,
         incl: Option<usize>,
     },
 }
@@ -1936,14 +1965,36 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
     let mut out = SeqSrc {
         msgs: Vec::new(),
         events: Vec::new(),
-        aliases: Vec::new(),
-        frames: 0,
+        frames: Vec::new(),
         sections: 0,
+        notes: 0,
     };
+    // open frames as (open index, message mark, note mark, divs so far),
+    // LIFO; Top/Div events carry the OPEN index and are rewritten to the
+    // closing-order frame identity once the scan knows it
+    let mut stack: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut open2close: Vec<Option<usize>> = Vec::new();
+    let mut last = Last::None;
     for raw in src.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with("%%") {
             continue;
+        }
+        // mermaid splits statements on `;` and reads `%%` as a comment
+        // only at the line start; the crate does neither, so `A->>B: hi;
+        // B->>A: yo` would draw one event where the source wrote two and
+        // `hi %% x` would lose its tail (review #3c, 2/8)
+        if line.contains(';') {
+            return Err(gate(
+                "a semicolon splits statements the parser merges",
+                false,
+            ));
+        }
+        if line.contains("%%") {
+            return Err(gate(
+                "a mid-line comment truncates the label upstream",
+                false,
+            ));
         }
         let head = line
             .split(|c: char| c == ':' || c.is_whitespace())
@@ -1952,23 +2003,46 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
             .to_ascii_lowercase();
         if STATEMENTS.contains(&head.as_str()) {
             match head.as_str() {
-                "alt" | "opt" | "loop" => out.frames += 1,
-                "else" => out.sections += 1,
-                "participant" | "actor" => {
-                    // `participant B as Bob`: remember both names so an
-                    // activation speaking the display name finds its lane
-                    let rest = line[head.len()..].trim();
-                    let rest = rest.split(':').next().unwrap_or("").trim();
-                    if let Some((id, alias)) = rest.split_once(" as ") {
-                        let (id, alias) = (id.trim(), alias.trim());
-                        if !id.is_empty() && !alias.is_empty() {
-                            out.aliases.push((alias, id));
-                        }
-                    } else if !rest.is_empty() {
-                        out.aliases.push((rest, rest));
-                    }
+                "alt" | "opt" | "loop" => {
+                    let oi = open2close.len();
+                    open2close.push(None);
+                    stack.push((oi, out.msgs.len(), out.notes, 0));
+                    last = Last::Top(oi);
                 }
+                "else" => {
+                    let Some(top) = stack.last_mut() else {
+                        return Err(gate("an else outside any frame", false));
+                    };
+                    last = Last::Div(top.0, top.3);
+                    top.3 += 1;
+                    out.sections += 1;
+                }
+                "end" => {
+                    // the crate auto-closes frames and swallows stray
+                    // ends; mermaid rejects both, and a drawn closure the
+                    // source never wrote is an invented fact
+                    let Some((oi, lo, note_mark, divs)) = stack.pop() else {
+                        return Err(gate("an end that closes no frame", false));
+                    };
+                    let close = out.frames.len();
+                    open2close[oi] = Some(close);
+                    last = Last::Floor(close);
+                    out.frames.push(FrameSrc {
+                        lo,
+                        hi: out.msgs.len(),
+                        divs,
+                        notes: out.notes - note_mark,
+                    });
+                }
+                "note" => {
+                    last = Last::Note(out.notes);
+                    out.notes += 1;
+                }
+                "participant" | "actor" | "sequencediagram" => {}
                 "activate" | "deactivate" => {
+                    // ids only: mermaid resolves activations by participant
+                    // id and errors on a bare display name (review #3c, 3);
+                    // whether the id owns a lane is settled at draw time
                     let who = line[head.len()..]
                         .trim()
                         .split(':')
@@ -1978,23 +2052,16 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                     if who.is_empty() {
                         return Err(gate("an activation naming no participant", false));
                     }
-                    let p = out
-                        .aliases
-                        .iter()
-                        .find(|(a, _)| *a == who)
-                        .map(|(_, id)| *id)
-                        .unwrap_or(who);
-                    let at = out.msgs.len();
                     out.events.push(if head == "activate" {
                         SeqEvt::Start {
-                            p,
-                            after: at,
+                            p: who,
+                            last,
                             incl: None,
                         }
                     } else {
                         SeqEvt::End {
-                            p,
-                            after: at,
+                            p: who,
+                            last,
                             incl: None,
                         }
                     });
@@ -2047,22 +2114,37 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
         }
         let i = out.msgs.len();
         out.msgs.push((left, right));
+        last = Last::Msg(i);
         // `->>+` wakes the receiver from this arrow on; `->>-` retires
         // the SENDER after it (mermaid semantics; the crate applies `-`
         // to the receiver, which is not what the source said)
         if token.ends_with('+') {
             out.events.push(SeqEvt::Start {
                 p: right,
-                after: i + 1,
+                last,
                 incl: Some(i),
             });
         } else if token.ends_with('-') {
             out.events.push(SeqEvt::End {
                 p: left,
-                after: i + 1,
+                last,
                 incl: Some(i),
             });
         }
+    }
+    if !stack.is_empty() {
+        return Err(gate("a frame that never closes", false));
+    }
+    // settle Top/Div onto the closing-order frame identity
+    for ev in &mut out.events {
+        let l = match ev {
+            SeqEvt::Start { last, .. } | SeqEvt::End { last, .. } => last,
+        };
+        *l = match *l {
+            Last::Top(oi) => Last::Top(open2close[oi].unwrap_or(usize::MAX)),
+            Last::Div(oi, k) => Last::Div(open2close[oi].unwrap_or(usize::MAX), k),
+            other => other,
+        };
     }
     Ok(out)
 }
@@ -2136,14 +2218,69 @@ fn sequence_raster(
     // a frame without a single message is deleted by the renderer
     // (layout/sequence.rs start_idx >= end_idx) together with its label
     // and sections: notes inside it would then draw outside any block
-    if aud.frames != seq.frames.len()
+    if aud.frames.len() != seq.frames.len()
         || seq.frames.iter().map(|f| f.dividers.len()).sum::<usize>() != aud.sections
+        || aud.notes != seq.notes.len()
     {
         return Err(gate(
             "a frame the renderer drops would orphan its words",
             false,
         ));
     }
+    // frame membership (review #3c, 1): the crate counts a note written
+    // just before a frame as part of it and lifts the top wall over the
+    // messages that came before, so messages the source placed OUTSIDE
+    // the loop would draw inside it. Each frame's px band must hold
+    // exactly the messages, notes and dividers the source wrote within
+    // its lines; pairing the frames also anchors activation bars
+    let head_y: Vec<f32> = layout.edges.iter().map(|e| e.points[0].1).collect();
+    let note_mid: Vec<f32> = seq.notes.iter().map(|n| n.y + n.height / 2.0).collect();
+    type FKey = (usize, usize, usize, usize);
+    let mut cand: HashMap<FKey, Vec<usize>> = HashMap::new();
+    for (fi, f) in seq.frames.iter().enumerate() {
+        let inside: Vec<usize> = (0..head_y.len())
+            .filter(|i| head_y[*i] > f.y && head_y[*i] < f.y + f.height)
+            .collect();
+        let notes = note_mid
+            .iter()
+            .filter(|y| **y > f.y && **y < f.y + f.height)
+            .count();
+        let (lo, hi) = match (inside.first(), inside.last()) {
+            (Some(a), Some(b)) => (*a, b + 1),
+            _ => (0, 0),
+        };
+        if inside.len() != hi - lo {
+            return Err(gate("a frame holds a gapped set of messages", true));
+        }
+        cand.entry((lo, hi, notes, f.dividers.len()))
+            .or_default()
+            .push(fi);
+    }
+    // identical keys happen for nested frames holding the same rows:
+    // the taller band is always the outer frame, which also closes later
+    for v in cand.values_mut() {
+        v.sort_by(|a, b| seq.frames[*b].height.total_cmp(&seq.frames[*a].height));
+    }
+    let src_fi: Vec<usize> = {
+        let mut order: Vec<usize> = (0..aud.frames.len()).collect();
+        order.sort_by_key(|si| {
+            let f = &aud.frames[*si];
+            (f.lo, f.hi, f.notes, f.divs, usize::MAX - si)
+        });
+        let mut back = vec![usize::MAX; aud.frames.len()];
+        for si in order {
+            let f = &aud.frames[si];
+            let key = (f.lo, f.hi, f.notes, f.divs);
+            let Some(fi) = cand.get_mut(&key).and_then(|v| v.pop()) else {
+                return Err(gate(
+                    "a frame would hold messages the source wrote outside it",
+                    true,
+                ));
+            };
+            back[si] = fi;
+        }
+        back
+    };
     let mut g = Grid::new(cols, rows);
     let mut placed: Vec<(i32, i32, &str)> = Vec::new();
     let (tl, tr, bl, br, hb, vb) = corners(plain);
@@ -2368,7 +2505,14 @@ fn sequence_raster(
     // 2. actor boxes at head and foot (NODE level over frame walls): a
     // box needs cells of its own: no line row, no other box, nothing
     // drawn underneath, and no sacred wall cell inside it
-    for n in layout.nodes.values().chain(seq.footboxes.iter()) {
+    let mut head_bot = 0i32;
+    let mut foot_top = rows as i32 - 1;
+    let boxed = layout
+        .nodes
+        .values()
+        .map(|n| (true, n))
+        .chain(seq.footboxes.iter().map(|n| (false, n)));
+    for (head, n) in boxed {
         let n_rows = (cy(n.y + n.height) - cy(n.y) + 1).max(2);
         let mut band = None;
         for off in [0, -1, 1, -2, 2] {
@@ -2406,6 +2550,11 @@ fn sequence_raster(
             false,
         )?;
         boxes.push(r);
+        if head {
+            head_bot = head_bot.max(r.y1);
+        } else {
+            foot_top = foot_top.min(r.y0);
+        }
     }
 
     // 4. messages: one row each, in source order, never merged
@@ -2557,6 +2706,7 @@ fn sequence_raster(
         }
     }
 
+    let mut note_rects: Vec<Rect> = Vec::new();
     // 5. notes over: a boxed label across its participants, needing cells
     // as free as an actor box's (messages are drawn: band_clear would
     // refuse them, so a note slides or refuses, never overwrites)
@@ -2598,58 +2748,67 @@ fn sequence_raster(
             false,
         )?;
         boxes.push(r);
+        note_rects.push(r);
     }
 
-    // 5b. activation bars, computed from the SOURCE (review #3b, 6/7):
-    // the crate hangs every bar on the message AFTER its activate line
-    // and deactivates the receiver of a `-` arrow where mermaid
-    // deactivates the sender, so its own activation boxes cannot be
-    // trusted; the ledger's claimed rows decide which messages a bar
-    // covers. One column right of the lane; a second nested activation
-    // steps one further right; arrows, boxes and words out-rank the bar
-    // and it hides behind them, while a wall it crosses joins as a
-    // junction because both lines truly continue
-    let head_bot = if msg_rows.is_empty() {
-        boxes.iter().map(|b| b.y1).max().unwrap_or(0)
-    } else {
-        boxes
-            .iter()
-            .filter(|b| b.y0 < *msg_rows.first().unwrap())
-            .map(|b| b.y1)
-            .max()
-            .unwrap_or(0)
+    // 5b. activation bars from the SOURCE and the ledger (review #3b
+    // 6/7, #3c 3/4/5/6): the crate hangs every bar on the wrong arrow,
+    // deactivates the receiver of a `-` arrow, and anchors bars to
+    // messages alone, ignoring the notes and frame lines written in
+    // between. Each event carries the last VISIBLE statement its line
+    // followed; a start begins one row below that statement's drawn row,
+    // an end closes on it; `+`/`-` suffixes ride their own arrow row; a
+    // never-closed bar runs to the foot box; a bar no statement spans
+    // takes one free row strictly BEFORE the next statement, or refuses;
+    // and a column that would sit on a frame wall refuses rather than
+    // vanish into it. Arrows, boxes and words out-rank the bar; a wall
+    // row it crosses joins as a junction, both lines truly continuing
+    let anchor = |last: Last| -> Option<i32> {
+        match last {
+            Last::None => None,
+            Last::Msg(i) => Some(msg_rows[i]),
+            Last::Note(n) => note_rects.get(n).map(|r| r.y1),
+            other => {
+                let (si, want) = match other {
+                    Last::Top(si) => (si, 0usize),
+                    Last::Div(si, k) => (si, k + 1),
+                    Last::Floor(si) => (si, usize::MAX),
+                    _ => return None,
+                };
+                if si == usize::MAX {
+                    return None;
+                }
+                let fi = *src_fi.get(si)?;
+                let f = &frame_rows.get(fi)?.1;
+                match want {
+                    0 => Some(f.y0),
+                    usize::MAX => Some(f.y1),
+                    k => f.lines.get(k - 1).copied(),
+                }
+            }
+        }
     };
-    let foot_top = if msg_rows.is_empty() {
-        rows as i32 - 1
-    } else {
-        boxes
-            .iter()
-            .filter(|b| b.y0 > *msg_rows.last().unwrap())
-            .map(|b| b.y0)
-            .min()
-            .unwrap_or(rows as i32 - 1)
-    };
+    let speaks = |p: &str| aud.msgs.iter().any(|(f, t)| *f == p || *t == p);
     let mut open: HashMap<&str, Vec<(i32, usize)>> = HashMap::new();
     let mut bars: Vec<(i32, i32, i32)> = Vec::new();
     for ev in &aud.events {
-        let (p, is_start, after, incl) = match ev {
-            SeqEvt::Start { p, after, incl } => (*p, true, *after, *incl),
-            SeqEvt::End { p, after, incl } => (*p, false, *after, *incl),
+        let (p, is_start, last, incl) = match ev {
+            SeqEvt::Start { p, last, incl } => (*p, true, *last, *incl),
+            SeqEvt::End { p, last, incl } => (*p, false, *last, *incl),
         };
         let lane_c = *lane
             .get(p)
             .ok_or_else(|| gate("activation for an unknown participant", false))?;
+        // a bar claims a participant lived through these rows: a name
+        // that never speaks has no lane in mermaid (display names are
+        // an upstream TypeError), so it has no bar here (review #3c, 3)
+        if !speaks(p) {
+            return Err(gate("an activation for a silent participant", false));
+        }
         if is_start {
             let top = match incl {
                 Some(i) => msg_rows[i],
-                None => {
-                    let base = if after == 0 {
-                        head_bot
-                    } else {
-                        msg_rows[after - 1]
-                    };
-                    base + 1
-                }
+                None => anchor(last).map(|r| r + 1).unwrap_or(head_bot + 1),
             };
             let stack = open.entry(p).or_default();
             let depth = stack.len();
@@ -2660,12 +2819,7 @@ fn sequence_raster(
         } else {
             let bot = match incl {
                 Some(i) => msg_rows[i],
-                None => {
-                    if after == 0 {
-                        return Err(gate("a deactivation before any message", false));
-                    }
-                    msg_rows[after - 1]
-                }
+                None => anchor(last).unwrap_or(head_bot),
             };
             let (top, depth) = open
                 .get_mut(p)
@@ -2674,13 +2828,19 @@ fn sequence_raster(
             bars.push((lane_c + 1 + depth as i32, top, bot));
         }
     }
-    for (p, stack) in open {
-        // never deactivated: mermaid runs the bar down to the foot box
-        let c = lane[p];
+    for (p, stack) in &open {
+        let c = lane[*p];
         for (top, depth) in stack {
-            bars.push((c + 1 + depth as i32, top, foot_top - 1));
+            // never deactivated: mermaid runs the bar down to the foot
+            // box — and past any note written after the last message
+            bars.push((c + 1 + *depth as i32, *top, foot_top - 1));
         }
     }
+    // statement rows bound every gap: a momentary bar must fit strictly
+    // before whatever the source wrote next, never after it (#3c, 5)
+    let mut bounds: Vec<i32> = msg_rows.clone();
+    bounds.extend(note_rects.iter().map(|r| r.y0));
+    bounds.push(foot_top);
     for (col, top, bot) in bars {
         if lane.values().any(|&l| l == col) || col >= cols as i32 - 1 {
             return Err(gate(
@@ -2688,14 +2848,23 @@ fn sequence_raster(
                 true,
             ));
         }
+        for (fi, f) in &frame_rows {
+            let _ = fi;
+            if (f.x0 == col || f.x1 == col) && f.y0 <= bot && top <= f.y1 {
+                return Err(gate("an activation bar would sit on a frame wall", true));
+            }
+        }
         if top > bot {
-            // a bar no message spans: one honest cell in the gap beside
-            // the arrows it briefly lived between
+            let a = top - 1;
+            let bound = bounds
+                .iter()
+                .copied()
+                .filter(|&r| r > a)
+                .min()
+                .unwrap_or(rows as i32);
             let mut placed = false;
-            for y in top..top + 3 {
-                if y <= bot + 3
-                    && !used.contains(&y)
-                    && !boxes.iter().any(|b| (b.y0..=b.y1).contains(&y))
+            for y in top..bound {
+                if !used.contains(&y)
                     && !sacred.contains(&(col, y))
                     && g.get(col, y).is_some_and(|c| c.owner <= FRAME)
                 {
@@ -2712,11 +2881,18 @@ fn sequence_raster(
         for y in top..=bot {
             if sacred.contains(&(col, y)) {
                 let ch = g.get(col, y).map(|c| c.ch).unwrap_or(' ');
-                // horizontal wall joins with the bar; a vertical wall or
-                // a title character already reads as a continuous line
+                // horizontal walls join with the bar; a vertical wall,
+                // a corner or a title character already reads as it is
                 if !matches!(
                     ch,
-                    '\u{2502}' | '\u{2551}' | '!' | ' ' | '\u{250c}' | '\u{2510}'
+                    '\u{2502}'
+                        | '\u{2551}'
+                        | '!'
+                        | ' '
+                        | '\u{250c}'
+                        | '\u{2510}'
+                        | '\u{2514}'
+                        | '\u{2518}'
                 ) && !ch.is_alphanumeric()
                 {
                     g.put(col, y, cross, FRAME);
@@ -2768,8 +2944,15 @@ fn pie_list(src: &str, layout: &Layout, cols: usize) -> Result<Vec<String>, Fail
         if line.is_empty() || line.starts_with("%%") {
             continue;
         }
+        // headers first: mermaid reads `pie`/`showData`/`title` lines as
+        // chart furniture, so `pie title Sales: Q1` must not be mistaken
+        // for a slice line (over-refusal, review #3c note)
+        let head = line.split_whitespace().next().unwrap_or("");
+        if matches!(head, "pie" | "showData" | "title") {
+            continue;
+        }
         let Some((label, value)) = line.rsplit_once(':') else {
-            continue; // the `pie showData title ...` header and comments
+            continue; // comments and blank furniture
         };
         let vtext = value.trim();
         let Ok(value) = vtext.parse::<f32>() else {
@@ -2781,6 +2964,12 @@ fn pie_list(src: &str, layout: &Layout, cols: usize) -> Result<Vec<String>, Fail
         let label = label.trim().trim_matches('"');
         if label.is_empty() {
             return Err(gate("a pie line the parser may not understand", false));
+        }
+        if written.iter().any(|(l, _, _)| *l == label) {
+            return Err(gate(
+                "a pie label the chart would merge into one slice",
+                false,
+            ));
         }
         written.push((label, value, vtext));
     }

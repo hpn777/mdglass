@@ -263,13 +263,23 @@ The layout does not depend on width; only rasterization does. Memoize
   activation boxes: those take the NEXT message's index (so every bar
   covered the wrong messages) and apply a `->>-` arrow's deactivation to
   the receiver where mermaid retires the SENDER (review #3b, 6/7). A
-  `->>+` arrow wakes the receiver under its own arrow row; an `activate`
-  line starts the bar below the arrow it follows; a deactivate closes it
-  at the arrow it follows; a never-closed bar runs to the foot box;
-  nested activations step one further right (depth > 2 refuses);
-  deactivating what nothing activated refuses. The bar hides behind
-  arrows, boxes and words (they out-rank it) and joins a crossed wall as
-  a junction, because both lines truly continue. A message label may
+  `->>+` arrow wakes the receiver under its own arrow row; a never-closed
+  bar runs to the foot box; nested activations step one further right
+  (depth > 2 refuses); deactivating what nothing activated refuses. Each
+  explicit activate/deactivate anchors on the LAST VISIBLE statement its
+  line followed — message, note, frame top, divider or floor, whatever
+  the source wrote in between (review #3c, 4): a start begins one row
+  below that statement's drawn row and an end closes on it, so a bar
+  neither ignores a note it should span nor starts beside a note written
+  before it. Activations name participant IDS only — display aliases map
+  bars to the wrong lane and a bare display name is a TypeError in
+  mermaid, so a name that never speaks refuses (review #3c, 3). A column
+  that would coincide with a frame's wall over the bar's rows refuses
+  rather than vanish into the wall or open a false junction (#3c, 6); a
+  bar no statement spans takes one free row strictly BEFORE the next
+  statement, or refuses (#3c, 5). The bar hides behind arrows, boxes and
+  words (they out-rank it) and joins a crossed wall as a junction,
+  because both lines truly continue. A message label may
   only sit ABOVE its arrow: below, an unlabelled neighbour makes the
   caption swap silent and the fuzz proved readers take the bait (review
   #3b, 2), so a label with no honest row above refuses the diagram. A
@@ -281,7 +291,18 @@ The layout does not depend on width; only rasterization does. Memoize
   refuse whole (B2). The renderer deletes every frame that holds no
   message (empty or notes-only), taking its keyword, condition and
   else-branches with it, so the written frame and divider counts must
-  match the layout's or the diagram refuses (review #3b, 3). Only `Note over` draws — and only where a free band exists;
+  match the layout's or the diagram refuses (review #3b, 3). Counts are
+  not enough though: the crate also counts a note written just before a
+  frame as part of it and lifts the top wall over the messages before —
+  a membership audit requires each frame's px band to hold EXACTLY the
+  messages, notes and dividers the source wrote inside its lines, pairing
+  source frames to layout frames by that membership (taller band = outer
+  frame) (#3c, 1). Frames that never close and stray `end`s refuse: the
+  crate auto-closes, mermaid errors, and a drawn closure the source never
+  wrote is invented (#3c note). The scanner also refuses any line holding
+  a `;` (mermaid splits statements there, the crate merges them into one
+  label and drops an event, #3c, 2) or a mid-line `%%` (a comment there
+  truncates the label upstream, #3c, 8). Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, source-end arrowheads and stick figures refuse whole.
 - `emit` now glyph-converts only cells with a routing mask: the sequence
@@ -341,7 +362,11 @@ The layout does not depend on width; only rasterization does. Memoize
   value while the legend keeps source order (zipping pairs wrong names
   with wrong numbers — each row reads its own slice's label/value), and
   the renderer DROPS slices below ~1% share — so every written slice must
-  appear in the layout, by label and value, or the pie refuses (a
+  appear in the layout, by label and value, or the pie refuses (
+  repeated labels refuse too — mermaid keeps the first value and merges
+  the slice, so a list printing every row would invent a slice (#3c, 7);
+  and `pie`/`showData`/`title` leading lines are chart furniture, not
+  slices, so `pie title Sales: Q1` draws (#3c note))a
   1-in-100000 pie draws no art, review #3 B5).
 - Honest known limits: `sequenceDiagram` layouts where the crate itself
   overlaps elements (consecutive frames sharing a wall row, self-loop

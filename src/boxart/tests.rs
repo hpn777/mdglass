@@ -880,6 +880,193 @@ fn labels_hug_their_own_route_not_the_nearest_thing() {
 }
 
 #[test]
+fn frames_hold_only_the_messages_the_source_put_inside() {
+    // review #3c (1): the crate counts a note written just before a
+    // frame as part of it and lifts the top wall over the earlier
+    // messages, so m03/m04 would draw INSIDE the loop
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n Pa->>Qb: m03\n Qb->>Rc: m04\n Note over Rc: n01\n loop F01\n  Pa->>Qb: m05\n end\n Qb->>Pa: m06\n",
+            80,
+            false
+        ),
+        None
+    );
+    // frames the source never closed, and stray ends, are a fact the
+    // crate invents by auto-closing what mermaid itself rejects
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n A->>B: m1\n loop L\n A->>B: m2\n",
+            100,
+            false
+        ),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("sequenceDiagram\n A->>B: m1\n end\n", 100, false),
+        None
+    );
+}
+
+#[test]
+fn one_line_two_statements_refuses() {
+    // review #3c (2): mermaid splits on `;`, the crate swallows it into
+    // one label, and an event would silently vanish
+    assert_eq!(
+        terminal_ascii("sequenceDiagram\n A->>B: hi; B->>A: yo", 100, false),
+        None
+    );
+    // review #3c (8): `%%` is a comment only at the line start there
+    assert_eq!(
+        terminal_ascii("sequenceDiagram\n A->>B: hi %% secret", 100, false),
+        None
+    );
+}
+
+#[test]
+fn activations_resolve_by_id_and_silence_refuses() {
+    // review #3c (3): `participant A as B` turns display-name lookups
+    // into wrong-lane bars, and a bare display name is a TypeError in
+    // mermaid but drew a bar beside the ghost lane here
+    let art = terminal_ascii(
+        "sequenceDiagram\n participant A as B\n participant B as C\n A->>B: m1\n activate B\n B->>A: m2\n deactivate B\n A->>B: m3\n",
+        100,
+        false,
+    )
+    .expect("alias repro fell back");
+    let row_of = |n: &str| art.iter().position(|l| l.contains(n)).unwrap();
+    let bars: Vec<usize> = (0..art.len())
+        .filter(|y| art[*y].contains('\u{2551}'))
+        .collect();
+    assert!(!bars.is_empty(), "no bar\n{}", art.join("\n"));
+    // the bar belongs to id B (displayed C): the RIGHT lane, and it
+    // must be gone before m3, which no longer carries it
+    assert!(bars
+        .iter()
+        .all(|b| art[*b].find('\u{2551}') > art[*b].find('\u{2502}')));
+    assert!(
+        bars.iter().all(|b| *b < row_of("m3")),
+        "bar outlives the deactivate\n{}",
+        art.join("\n")
+    );
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n participant A\n participant B as Bob\n A->>B: m1\n activate Bob\n B->>A: m2\n",
+            100,
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn activation_bars_anchor_on_every_visible_statement() {
+    // review #3c (4): a bar starts and stops at the LAST thing the
+    // source wrote at its line, notes and frame lines included; the
+    // old code looked only at the previous message
+    let rows =
+        |src: &str, w| terminal_ascii(src, w, false).unwrap_or_else(|| panic!("fell back: {src}"));
+    let row_of = |a: &[String], n: &str| a.iter().position(|l| l.contains(n)).unwrap();
+    let bar_rows = |a: &[String]| -> Vec<usize> {
+        (0..a.len())
+            .filter(|y| a[*y].contains('\u{2551}'))
+            .collect()
+    };
+    // activate after a note: the bar starts BELOW the note box
+    let a = rows(
+        "sequenceDiagram\n A->>B: m1\n Note over A,B: n1\n activate B\n B->>A: m2\n deactivate B\n",
+        100,
+    );
+    let b = bar_rows(&a);
+    assert!(
+        !b.is_empty() && b[0] > row_of(&a, "n1"),
+        "bar starts beside the note\n{}",
+        a.join("\n")
+    );
+    // deactivate after a note: the bar runs THROUGH the note's rows
+    let a = rows("sequenceDiagram\n A->>B: m1\n activate B\n B->>A: m2\n Note over A: n1\n deactivate B\n A->>B: m3\n", 100);
+    let b = bar_rows(&a);
+    assert!(
+        !b.is_empty() && *b.last().unwrap() > row_of(&a, "n1"),
+        "bar stops before the note\n{}",
+        a.join("\n")
+    );
+    // activate as the first line: the bar starts under the head boxes,
+    // not below the note written after it
+    let a = rows(
+        "sequenceDiagram\n activate B\n Note over A: n1\n A->>B: m1\n deactivate B\n",
+        100,
+    );
+    let b = bar_rows(&a);
+    assert!(
+        !b.is_empty() && b[0] < row_of(&a, "n1"),
+        "bar waits for the note to start\n{}",
+        a.join("\n")
+    );
+    // a never-closed bar runs past a trailing note down to the foot
+    let a = rows("sequenceDiagram\n alt F01\n  activate Pa\n  Qb-->>Pa: m01\n  Qb->>Pa: m02\n  else E02\n  Pa->>Qb: m03\n end\n Pa-->>Qb: m04\n Qb-->>Pa: m05\n Qb-->>Pa: m06\n  Pa-->>Qb: m07\n Note over Qb: n01\n Note over Pa: n02\n", 100);
+    let b = bar_rows(&a);
+    assert!(
+        !b.is_empty() && a[row_of(&a, "n01")].contains('\u{2551}'),
+        "bar invents an early end\n{}",
+        a.join("\n")
+    );
+    // deactivate after `end`: the bar reaches the frame floor
+    let a = rows("sequenceDiagram\n A->>B: m1\n opt cond\n  A->>+B: m2\n  B->>A: m3\n end\n deactivate B\n A->>B: m4\n", 60);
+    let b = bar_rows(&a);
+    assert!(
+        !b.is_empty() && b.iter().any(|y| *y > row_of(&a, "m3")),
+        "bar ends inside the frame\n{}",
+        a.join("\n")
+    );
+}
+
+#[test]
+fn a_momentary_bar_never_sneaks_past_the_next_statement() {
+    // review #3c (5): activate+deactivate between two messages may not
+    // drop its cell BELOW the next arrow
+    let src = "sequenceDiagram\n Pa->>Rc: m01\n Pa->>Rc: m02\n Rc->>Qb: m03\n Pa-->>Qb: m04\n activate Qb\n deactivate Qb\n Pa-->>Rc: m05\n Rc->>Qb: m06\n Rc-->>Qb: m07\n";
+    for cols in [80, 101, 130] {
+        if let Some(a) = terminal_ascii(src, cols, false) {
+            let m05 = a.iter().position(|l| l.contains("m05")).unwrap();
+            assert!(
+                a.iter()
+                    .enumerate()
+                    .all(|(y, l)| !l.contains('\u{2551}') || y < m05),
+                "momentary bar sits after the next statement at {cols} cols\n{}",
+                a.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn a_bar_never_lives_on_a_frame_wall() {
+    // review #3c (6): for the rightmost lane the nested bar's column IS
+    // the frame's wall: it vanished inside it and turned the corner
+    // into a junction, so it now refuses
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n Pa->>Qb: m01\n activate Qb\n Pa->>Qb: m02\n activate Qb\n opt F01\n  Qb->>Pa: m03\n end\n Qb->>Pa: m04\n deactivate Qb\n Pa->>Qb: m05\n deactivate Qb\n Pa->>Qb: m06\n",
+            60,
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_repeated_pie_label_refuses() {
+    // review #3c (7): mermaid keeps the FIRST value of a repeated label
+    // and merges the slice; printing every row invents a slice and
+    // wrong shares
+    assert_eq!(
+        terminal_ascii("pie\n \"a\": 1\n \"b\": 1\n \"a\": 2\n", 90, false),
+        None
+    );
+}
+
+#[test]
 fn pie_pairs_each_value_with_its_own_slice() {
     // review #3 (B5): slices sort by value, the legend keeps source order;
     // zipping the two pairs wrong names with wrong numbers
