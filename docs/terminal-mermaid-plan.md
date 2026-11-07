@@ -416,7 +416,10 @@ The layout does not depend on width; only rasterization does. Memoize
   (#3p minor; the mermaid.live default example at 60 columns). The
   turn-turn `┼` refusal holds for edges sharing an endpoint too: two
   labelled routes from one box crossing so would carry a label onto the
-  wrong edge (#3q, 1).
+  wrong edge (#3q, 1). The same holds over a run of shared cells: a run
+  away from the shared box refuses unless one route crosses it straight —
+  opposite arms AND every run cell on that one line, so a jog (`┤` over
+  `┴`) is no straight line (#3r, 1; #3s, 1).
   Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, quoted note actors (mermaid gives `Note over "C"` a lane of its

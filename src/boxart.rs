@@ -2313,7 +2313,10 @@ fn graph_raster(
                     }
                     // the arms each route sticks out of the run: two
                     // opposite arms = it crosses straight, anything else
-                    // = it turns inside the run
+                    // = it turns inside the run. Opposite arms on two
+                    // different lines are a jog (`┤`..`┴`, `┬─┤`), not a
+                    // straight line: every run cell must lie on that one
+                    // line too (review #3s)
                     let straight = |d: &HashMap<(i32, i32), u8>| {
                         let mut outs: Vec<u8> = Vec::new();
                         for &(x, y) in &run {
@@ -2329,7 +2332,11 @@ fn graph_raster(
                                 }
                             }
                         }
-                        outs.len() == 2 && (outs[0] | outs[1] == M_NS || outs[0] | outs[1] == M_EW)
+                        outs.len() == 2
+                            && (outs[0] | outs[1] == M_NS || outs[0] | outs[1] == M_EW)
+                            && run
+                                .iter()
+                                .all(|c| d.get(c).copied() == Some(outs[0] | outs[1]))
                     };
                     if !straight(&dirs) && !straight(&prev.dirs) {
                         return Err(gate("two routes merge into a shape no source draws", true));

@@ -1536,6 +1536,10 @@ fn boxes_and_notes_stay_where_they_were_written() {
     // `├──►`): "fail" and "POST" merged, then split to Billing/Storage
     let run = "flowchart LR\n    Client --> Auth\n    Auth -->|fail| Storage\n    Auth -->|POST| Billing\n    Auth -->|500| DB\n    Auth -->|404| Queue\n    Auth -->|invalid| Review";
     assert_eq!(terminal_ascii(run, 80, false), None);
+    // review #3s: a jog (`┤` over `┴`) has opposite arms yet is no
+    // straight line: "valid" read on into Retry, "POST" up to Billing
+    let jog = "flowchart LR\n    Queue --> Login\n    Login -->|GET| Storage\n    Login -->|valid| Billing\n    Login -->|POST| Retry\n    Login -->|merge| Users";
+    assert_eq!(terminal_ascii(jog, 80, false), None);
     // the mermaid.live default at 60 cols put two heads back to back
     // (`iPhone ┐◄►┌ Car`); it refuses there and draws from 70
     let xmas = "flowchart TD\n    A[Christmas] -->|Get money| B(Go shopping)\n    B --> C{Let me think}\n    C -->|One| D[Laptop]\n    C -->|Two| E[iPhone]\n    C -->|Three| F[fa:fa-car Car]";
