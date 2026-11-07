@@ -1452,6 +1452,25 @@ fn boxes_and_notes_stay_where_they_were_written() {
     for cols in [60, 80, 120, 200] {
         assert_eq!(terminal_ascii(src, cols, false), None, "@{cols}");
     }
+    // review #3l: `else` belongs to `alt` only, and a subgraph title in
+    // shape brackets (a mermaid parse error) may not draw stripped
+    for src in [
+        "sequenceDiagram\n  A->>B: one\n  loop L\n    A->>B: x\n  else E\n    B->>A: y\n  end",
+        "sequenceDiagram\n  A->>B: one\n  opt O\n    A->>B: x\n  else E\n    B->>A: y\n  end",
+        "flowchart TD\n  subgraph s1 [(cyl)]\n    A\n  end",
+        "flowchart LR\n  subgraph s1 [/slash/]\n    A --> B\n  end\n  B --> C",
+    ] {
+        for cols in [60, 100, 200] {
+            assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
+        }
+    }
+    for src in [
+        "flowchart TD\n  subgraph s1 [My Title]\n    A --> B\n  end\n  C --> A",
+        "flowchart TD\n  subgraph \"My Title\"\n    A --> B\n  end\n  C --> A",
+        "flowchart TD\n  subgraph s1 [\"Quoted title\"]\n    A --> B\n  end\n  C --> A",
+    ] {
+        assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
+    }
     // honest neighbours: members written plainly, a note mid-branch
     assert!(terminal_ascii(
         "flowchart TD\nBee --> D\nsubgraph s1 [One]\nCy\nD\nend",

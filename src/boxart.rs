@@ -1229,8 +1229,8 @@ fn graph_raster(
         let mut member_of: Vec<(&str, usize)> = Vec::new();
         let mut open_no: Vec<usize> = Vec::new();
         let mut opened = 0usize;
-        // per subgraph (declaration number): nesting depth and title
-        let mut sg_info: Vec<(usize, &str)> = Vec::new();
+        // per subgraph (declaration number): its title and its parent's
+        let mut sg_info: Vec<(&str, Option<usize>)> = Vec::new();
         for (no, raw) in ls.iter().enumerate() {
             if !stmt(no, raw) {
                 continue;
@@ -1263,9 +1263,9 @@ fn graph_raster(
                 }
                 open.push(id);
                 filled.push(false);
+                sg_info.push((flow_subgraph_title(line), open_no.last().copied()));
                 open_no.push(opened);
                 opened += 1;
-                sg_info.push((open.len(), flow_subgraph_title(line)));
                 continue;
             }
             if head == "end" {
@@ -1412,19 +1412,35 @@ fn graph_raster(
                 })
                 .collect();
             around.sort_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)));
-            let want = member_of
+            // the titles of every subgraph around it, innermost first
+            let mut chain: Vec<&str> = Vec::new();
+            let mut at = member_of
                 .iter()
                 .find(|(m, _)| *m == n.id.as_str())
-                .and_then(|&(_, k)| sg_info.get(k));
-            let ok = match want {
-                None => around.is_empty(),
-                Some(&(depth, title)) => {
-                    around.len() == depth
-                        && around
-                            .first()
-                            .is_some_and(|sg| norm(&sg.label) == norm(title))
-                }
+                .map(|&(_, k)| k);
+            while let Some(k) = at {
+                let Some(&(title, parent)) = sg_info.get(k) else {
+                    break;
+                };
+                chain.push(title);
+                at = parent;
+            }
+            // titles compare STRICTLY (one pair of quotes off, spacing
+            // collapsed): a loose match let `[(cyl)]`, which mermaid
+            // rejects, draw as a frame titled `cyl` (review #3l, 2)
+            let strict = |t: &str| -> String {
+                let t = t.trim();
+                let t = t
+                    .strip_prefix('"')
+                    .and_then(|r| r.strip_suffix('"'))
+                    .unwrap_or(t);
+                t.split_whitespace().collect::<Vec<_>>().join(" ")
             };
+            let ok = around.len() == chain.len()
+                && around
+                    .iter()
+                    .zip(&chain)
+                    .all(|(sg, t)| strict(&sg.label) == strict(t));
             if !ok {
                 return Err(gate(
                     "a box drawn outside the subgraph it was written in",
@@ -2815,6 +2831,8 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
     // LIFO; Top/Div events carry the OPEN index and are rewritten to the
     // closing-order frame identity once the scan knows it
     let mut stack: Vec<(usize, usize, usize, usize)> = Vec::new();
+    // the keyword that opened each stacked frame: only `alt` takes `else`
+    let mut kinds: Vec<String> = Vec::new();
     let mut open2close: Vec<Option<usize>> = Vec::new();
     let mut last = Last::None;
     for raw in src.lines() {
@@ -2849,12 +2867,18 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                     let oi = open2close.len();
                     open2close.push(None);
                     stack.push((oi, out.msgs.len(), out.notes, 0));
+                    kinds.push(head.clone());
                     last = Last::Top(oi);
                 }
                 "else" => {
                     let Some(top) = stack.last_mut() else {
                         return Err(gate("an else outside any frame", false));
                     };
+                    // `loop`/`opt` take no `else` in mermaid (a parse
+                    // error); the crate splits the frame (review #3l, 1)
+                    if kinds.last().map(String::as_str) != Some("alt") {
+                        return Err(gate("an else in a frame that has no branches", false));
+                    }
                     last = Last::Div(top.0, top.3);
                     top.3 += 1;
                     out.sections += 1;
@@ -2866,6 +2890,7 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                     let Some((oi, lo, note_mark, divs)) = stack.pop() else {
                         return Err(gate("an end that closes no frame", false));
                     };
+                    kinds.pop();
                     let close = out.frames.len();
                     open2close[oi] = Some(close);
                     last = Last::Floor(close);

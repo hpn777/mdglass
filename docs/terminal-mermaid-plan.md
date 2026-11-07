@@ -275,7 +275,9 @@ The layout does not depend on width; only rasterization does. Memoize
   around it — in the very section (`alt`/`else` branch) it was written
   in — and clear of every other frame: the crate dropped a note ending
   an `alt` branch below the `else` divider, and drew a frame too narrow
-  for a note's lane (review #3k, 2). Activations name participant IDS only — display aliases map
+  for a note's lane (review #3k, 2). Only `alt` takes `else`: mermaid
+  rejects it in `loop`/`opt`, where the crate splits the frame (#3l, 1).
+  Activations name participant IDS only — display aliases map
   bars to the wrong lane and a bare display name is a TypeError in
   mermaid, so a name that never speaks refuses (review #3c, 3). Lane
   order belongs to the SOURCE — declarations, then first mention in
@@ -372,8 +374,10 @@ The layout does not depend on width; only rasterization does. Memoize
   mermaid gives it to the one that closes first and draws the other,
   emptied, as a titled box (#3j, 1); every visible box must be DRAWN
   inside exactly as many frames as its subgraph is deep, the innermost
-  titled as that subgraph (a node named only by `~~~` inside one was
-  placed outside it, #3k, 1); and two edges between the same
+  titled as that subgraph and every outer frame titled as its
+  ancestors — titles compared strictly, so `[(cyl)]`, which mermaid
+  rejects, cannot pass as `cyl` (a node named only by `~~~` inside one
+  was placed outside it, #3k, 1; #3l, 2); and two edges between the same
   pair of boxes must each keep cells of their own outside the boxes,
   or the raster has drawn two edges as one arrow (#3f, 1) — nor may
   they share one arrowhead. Every visible box must also SAY what the
@@ -406,9 +410,9 @@ The layout does not depend on width; only rasterization does. Memoize
   cell per glyph. The list hangs under the picture, so it is width-gated
   against the terminal, not the picture's own bounding box (the first
   gate compared every relation to the art width and refused even a single
-  short relation at any window size, review #3b minor). Self-relations, empty relation lists (would draw boxes
-  the source never related) and entity names carrying the list's own
-  separators refuse.
+  short relation at any window size, review #3b minor). Self-relations,
+  empty relation lists (would draw boxes the source never related) and
+  entity names carrying the list's own separators refuse.
 - Edge label placement learned to float: rows ±2 and columns ±4 from the
   anchor (SVG hangs labels loosely), preferring one column of air from
   neighbouring labels — falling back to touching rather than refusing.
