@@ -1309,6 +1309,36 @@ fn every_written_edge_and_box_is_its_own() {
 }
 
 #[test]
+fn mermaid_only_boxes_and_memberships_refuse() {
+    // review #3g (1): naming a subgraph's id inside another subgraph
+    // nests it there in mermaid; the crate drew it beside its parent
+    for src in [
+        "flowchart TD\n  subgraph s1\n    s2\n  end\n  subgraph s2\n    A --> B\n  end",
+        "flowchart LR\n  subgraph s2\n    A\n  end\n  subgraph s1\n    B\n    s2\n  end",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
+    // review #3g (2): mermaid draws a box for a `style` target nobody
+    // wrote, and one literally named `A,B` for a list
+    for src in [
+        "flowchart LR\n  A --> B\n  style Z fill:#f00",
+        "flowchart LR\n  A --> B\n  style A,B fill:#f00",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
+    // styling a written node, before or after it is written, and `class`
+    // or `click` on any id create no box in mermaid: these still draw
+    for src in [
+        "flowchart LR\n  A --> B\n  style A fill:#f00",
+        "flowchart LR\n  style B fill:#f00\n  A --> B",
+        "flowchart LR\n  A --> B\n  class Z foo",
+        "flowchart LR\n  A --> B\n  click Z href \"http://x\"",
+    ] {
+        assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
+    }
+}
+
+#[test]
 fn frontmatter_cannot_hide_a_title() {
     // review #3e (2): YAML quoting styles, braces, a complex key and
     // escape codes all still set the caption mermaid shows

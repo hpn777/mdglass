@@ -794,6 +794,15 @@ fn flow_shape_tail(s: &str) -> Option<(&str, Option<&str>)> {
 /// — or an `x`/`o` arrow end returns None, and the diagram refuses: a
 /// statement mermaid rejects may not draw as confident art that drops
 /// written words.
+/// the id a `subgraph` line declares: `subgraph s1 [Title]` -> `s1`
+fn flow_subgraph_id(line: &str) -> &str {
+    line["subgraph".len()..]
+        .trim_start()
+        .split(|c: char| c.is_whitespace() || c == '[')
+        .next()
+        .unwrap_or("")
+}
+
 /// ids named by a statement, the links it writes as endpoint pairs, and
 /// the label text written inside each id's shape
 type FlowStmt<'a> = (
@@ -1056,6 +1065,17 @@ fn graph_raster(
         let mut labels: Vec<(&str, &str)> = Vec::new();
         let mut open: Vec<&str> = Vec::new();
         let mut nested: Vec<&str> = Vec::new();
+        let mut styled: Vec<&str> = Vec::new();
+        let declared: Vec<&str> = src
+            .lines()
+            .map(str::trim)
+            .filter(|l| {
+                l.split_whitespace()
+                    .next()
+                    .is_some_and(|h| h.eq_ignore_ascii_case("subgraph"))
+            })
+            .map(flow_subgraph_id)
+            .collect();
         // a closed frontmatter block holds YAML keys, not statements —
         // `config: { theme: dark }` must keep drawing (#3e honest set)
         let ls: Vec<&str> = src.lines().collect();
@@ -1083,11 +1103,7 @@ fn graph_raster(
             // subgraph nesting: an edge landing on a subgraph INSIDE another
             // subgraph routes to strokes no element owns (review #3f, 6)
             if head == "subgraph" {
-                let id = line["subgraph".len()..]
-                    .trim_start()
-                    .split(|c: char| c.is_whitespace() || c == '[')
-                    .next()
-                    .unwrap_or("");
+                let id = flow_subgraph_id(line);
                 if !open.is_empty() {
                     nested.push(id);
                 }
@@ -1098,12 +1114,29 @@ fn graph_raster(
                 open.pop();
                 continue;
             }
+            if head == "style" {
+                // mermaid draws a box for a `style` target nobody wrote
+                // (and one literally named `A,B` for a list); the crate
+                // draws neither (review #3g, 2)
+                let target = line.split_whitespace().nth(1).unwrap_or("");
+                if target.contains(',') {
+                    return Err(gate("a style line mermaid draws as a box", false));
+                }
+                styled.push(target);
+                continue;
+            }
             if SKIP.contains(&head.as_str()) {
                 continue;
             }
             let Some((mut line_ids, line_pairs, line_labels)) = flow_stmt(line) else {
                 return Err(gate("a flowchart statement the parser may misread", false));
             };
+            // a subgraph id named inside another subgraph NESTS it there
+            // in mermaid; the crate draws it beside its parent instead
+            // (review #3g, 1)
+            if !open.is_empty() && line_ids.iter().any(|i| declared.contains(i)) {
+                return Err(gate("a subgraph nested by membership", true));
+            }
             ids.append(&mut line_ids);
             pairs.extend(line_pairs);
             labels.extend(line_labels);
@@ -1128,6 +1161,12 @@ fn graph_raster(
         actual.sort();
         if expect != actual {
             return Err(gate("an edge the renderer moved", true));
+        }
+        if styled
+            .iter()
+            .any(|t| !ids.contains(t) && !declared.contains(t))
+        {
+            return Err(gate("a style line mermaid draws as a box", false));
         }
         if expect
             .iter()
@@ -1768,7 +1807,7 @@ fn graph_raster(
                 let same_pair =
                     (prev.from == from && prev.to == to) || (prev.from == to && prev.to == from);
                 if same_pair && prev.heads.contains_key(&(hx, hy)) {
-                    return Err(gate("two parallel edges share one arrowhead", true));
+                    return Err(gate("two arrowheads land on one cell", true));
                 }
             }
             let dec = if start {
