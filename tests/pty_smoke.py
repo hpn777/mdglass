@@ -99,6 +99,9 @@ check("non-UTF-8 input is shown, not rejected", r.returncode == 0 and "caf\ufffd
 
 # mermaid box art: default on in a pager, D falls back to source, flag off,
 # and piped output stays grep-able markdown source
+def frames_of(out):
+    return [visible(f) for f in out.split(b"\x1b[H")]
+
 mmd = doc("m.md", "```mermaid\ngraph LR\n  A[alpha] --> B[omega]\n```\n")
 out, _ = run_pty([mmd], [b"q"])
 vis = visible(out)
@@ -125,6 +128,14 @@ check("capped diagram never blocks keys or quit", exited)
 
 out, _ = run_pty([mmd], [b"/alpha", b"\r", b"q"])
 check("search highlights the node label inside the art", b"\x1b[7ma" in out)
+# P3 kinds go through the same warm queue: a state diagram must draw its
+# dots and a sequence its arrow, end to end in the real pager
+st_mmd = doc("st.md", "```mermaid\nstateDiagram-v2\n  [*] --> Idle\n  Idle --> Running: start\n  Running --> Idle: stop\n```\n")
+out, _ = run_pty([st_mmd], [b"q"])
+check("state diagram draws box art", "●" in frames_of(out)[-1] and "Idle" in frames_of(out)[-1], frames_of(out)[-1][:200])
+sq_mmd = doc("sq.md", "```mermaid\nsequenceDiagram\n  participant A as Web\n  participant B as API\n  A->>B: ping\n  B-->>A: pong\n```\n")
+out, _ = run_pty([sq_mmd], [b"q"])
+check("sequence diagram draws lifelines", "►" in frames_of(out)[-1] and "ping" in frames_of(out)[-1], frames_of(out)[-1][:200])
 broken = doc("bad.md", "```mermaid\nnot a diagram\n```\n")
 out, _ = run_pty([broken], [b"q"])
 check("broken mermaid stays code in the pager", "not a diagram" in visible(out))

@@ -28,8 +28,10 @@ Blocks fenced as \fBmermaid\fR and untyped blocks that look like box art
 are drawn as vector pictures, in a palette that follows the light/dark
 style; a block that cannot be drawn (no SVG loader,
 unparsable input) is shown as its code instead. In the terminal, mermaid
-fences are drawn as ASCII box art instead (see \fB\-\-no\-diagrams\fR and
-the \fBD\fR key); piped output keeps the markdown source unless
+fences are drawn as ASCII box art instead: flowcharts, state machines,
+ER models, sequence diagrams and pie charts; syntax that cannot be drawn
+truthfully at the terminal width stays code (see \fB\-\-no\-diagrams\fR
+and the \fBD\fR key); piped output keeps the markdown source unless
 \fB\-\-color\fR forces art.
 .TP
 .BR \-n ", " \-\-no\-pager

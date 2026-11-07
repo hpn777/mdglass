@@ -40,7 +40,9 @@ Those wraps are real line breaks, as in the terminal: find does not match a phra
 across two lines, copied text keeps the breaks, and resizing or zooming clears a selection.
 ```` ```mermaid ```` blocks and untyped box-art blocks are drawn as diagrams: vector
 graphics in the window (in a palette that follows your light/dark setting), and honest
-ASCII box art in the terminal, where node names stay searchable text. Press `D` to flip
+ASCII box art in the terminal, where node names stay searchable text. The terminal
+draws flowcharts, state machines, ER models, sequence diagrams and pie charts; syntax
+it cannot draw truthfully stays code. Press `D` to flip
 between art and source, or start with `--no-diagrams`. Any diagram that cannot be drawn
 truthfully at your width stays a code block; piped output stays markdown source
 (unless `--color` forces art), so `mdglass file.md | grep` works.

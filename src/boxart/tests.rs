@@ -18,6 +18,22 @@ use crate::ansi::visible_width;
 const CLEAN_LR: &str = "graph LR\n A[Start] --> B[Fetch data]\n B --> C{Valid?}\n C -->|yes| D[Save]\n D --> E[Done]\n C -->|no| F[Reject]";
 const CLEAN_TD: &str = "graph TD\n A[Intro] --> B[Method]\n B --> C[Results]\n C --> D[Conclusions]\n B --> E[Related work]";
 const SUBGRAPH_TD: &str = "graph TD\n web[web] --> auth\n subgraph backend\n auth[auth] --> db[db]\n end\n db --> done[done]";
+
+// phase 3 kinds, lifted from the reviewed fixtures (/tmp/opencode/rv/fixtures)
+const STATE_MMD: &str = "stateDiagram-v2\n [*] --> Idle\n Idle --> Running: start\n Running --> Idle: stop\n Running --> Paused: pause\n Paused --> Running: resume\n state Working {\n [*] --> Load\n Load --> Sync\n Sync --> Load: retry\n Sync --> [*]\n }\n Running --> Working: dispatch\n Working --> Done: complete\n Done --> [*]\n";
+const ER_MMD: &str = "erDiagram\n CUSTOMER ||--o{ ORDER : places\n ORDER ||--|{ LINE-ITEM : contains\n CUSTOMER }|..|{ DELIVERY-ADDRESS : uses\n CUSTOMER {\n string name\n string email\n }\n ORDER {\n int id\n date placed\n }\n LINE-ITEM {\n int qty\n float price\n }\n DELIVERY-ADDRESS {\n string city\n }\n";
+// kitchen sink: the crate layout overlaps the self-loop into the note rect
+// (loop ends at 525 px, the note starts at 500), so no honest row band
+// exists at 16 px/cell - the raster must refuse this one, not redraw it
+const SEQ_DENSE_MMD: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n opt debug\n B->>B: log timing\n end\n Note over A,C: end-to-end trace\n";
+// the same battery, but the note sits between the blocks where the layout
+// gives it clear rows: lanes, activations, alt/else, opt, self loop, note
+const SEQ_MMD: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n Note over A,C: trace\n opt debug\n B->>B: log timing\n end\n B-->>A: 200 OK\n deactivate B\n";
+const SEQV1: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n B-->>A: 200 OK\n deactivate B\n";
+const SEQV2: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n C-->>B: rows\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n";
+const SEQV3: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n A->>B: ping\n opt debug\n B->>B: log timing\n end\n B-->>A: pong\n";
+const SEQV4: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n Note over A,C: trace\n B->>C: SELECT\n B-->>A: done\n";
+const PIE_MMD: &str = "pie showData title Browser share\n \"Chrome\" : 65.1\n \"Safari\" : 19.2\n \"Other\" : 15.7\n";
 const FAN_BACK: &str = "flowchart LR\n A[fetch] --> P[parse]\n B[read] --> P\n C[stdin] --> P\n P --> O1[json]\n P --> O2[table]\n P --> O3[html]\n O3 --> A";
 const MULTI_SELF: &str = "flowchart LR\n A[start] ==> B[work]\n A --> B\n A -.-> B\n B --> B";
 const SEQUENCE: &str = "sequenceDiagram\n Alice->>Bob: hello\n Bob-->>Alice: hi";
@@ -127,7 +143,11 @@ fn deterministic() {
 
 #[test]
 fn refusals_are_total() {
-    assert_eq!(terminal_ascii(SEQUENCE, 100, false), None, "sequence is P3");
+    assert_eq!(
+        terminal_ascii("classDiagram\n Animal <|-- Duck", 100, false),
+        None,
+        "class diagrams stay source"
+    );
     assert_eq!(terminal_ascii(NOT_MMD, 100, false), None);
     assert_eq!(terminal_ascii("", 100, false), None);
     assert_eq!(terminal_ascii(CLEAN_LR, 47, false), None, "below MIN_COLS");
@@ -234,6 +254,17 @@ fn dump_fixtures_for_eyeballing() {
         ("fused_ranks", FUSED_RANKS, 140),
         ("frame_rider", FRAME_RIDER, 100),
         ("large_plain", FUSED_RANKS, 140),
+        ("state", STATE_MMD, 120),
+        ("state_plain", STATE_MMD, 120),
+        ("er", ER_MMD, 120),
+        ("seq", SEQ_MMD, 140),
+        ("seq_plain", SEQ_MMD, 140),
+        ("seq_dense", SEQ_DENSE_MMD, 140),
+        ("seqv1", SEQV1, 140),
+        ("seqv2", SEQV2, 140),
+        ("seqv3", SEQV3, 140),
+        ("seqv4", SEQV4, 140),
+        ("pie", PIE_MMD, 80),
     ] {
         let plain = name.ends_with("_plain");
         let body = match terminal_ascii(src, cols, plain) {
@@ -263,4 +294,145 @@ fn probe_never_runs_the_engine_and_agrees_with_full() {
     assert!(matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown | Outcome::Source));
     let _ = terminal_ascii(CLEAN_TD, 48, false);
     assert!(!matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown), "must converge");
+}
+
+
+#[test]
+fn phase3_kinds_render_art() {
+    for (src, cols, words) in [
+        (
+            STATE_MMD,
+            120usize,
+            &["Idle", "Running", "Paused", "Working", "Load", "Sync", "Done"][..],
+        ),
+        (
+            ER_MMD,
+            120,
+            &[
+                "CUSTOMER",
+                "ORDER",
+                "LINE-ITEM",
+                "DELIVERY-ADDRESS",
+                "Relationships:",
+                "||--o{",
+                "places",
+            ][..],
+        ),
+        (
+            SEQ_MMD,
+            140,
+            &[
+                "Web",
+                "API",
+                "DB",
+                "GET /items",
+                "found",
+                "missing",
+                "debug",
+                "log timing",
+                "trace",
+                "200 OK",
+            ][..],
+        ),
+        (
+            PIE_MMD,
+            80,
+            &[
+                "Browser share", "Chrome", "65.1", "Safari", "19.2", "Other", "15.7",
+            ][..],
+        ),
+    ] {
+        let art = terminal_ascii(src, cols, false).unwrap_or_else(|| panic!("kind fell back to source: {src}"));
+        check_invariants(&art, cols);
+        must_contain(&art, words);
+    }
+    // the glyphs that carry each kind's meaning
+    let st = terminal_ascii(STATE_MMD, 120, false).expect("state fell back");
+    must_contain(&st, &["●", "◉"]);
+    let sq = terminal_ascii(SEQ_MMD, 140, false).expect("sequence fell back");
+    must_contain(&sq, &["►", "◄", "╌", "║"]);
+}
+
+#[test]
+fn phase3_plain_mode_is_pure_ascii() {
+    for src in [STATE_MMD, ER_MMD, SEQ_MMD, PIE_MMD] {
+        let art = terminal_ascii(src, 140, true).expect("plain kind fell back");
+        check_invariants(&art, 140);
+        for line in &art {
+            assert!(line.is_ascii(), "non-ascii in plain art: {line:?}");
+        }
+    }
+    // the plain dots still distinguish start from end
+    let st = terminal_ascii(STATE_MMD, 140, true).expect("state plain fell back");
+    must_contain(&st, &["o", "@"]);
+}
+
+#[test]
+fn phase3_refusals_are_total() {
+    let refuse = |src: &str, why: &str| {
+        assert_eq!(terminal_ascii(src, 140, false), None, "should refuse: {why}");
+    };
+    refuse(SEQ_DENSE_MMD, "crate layout overlaps the self-loop into the note");
+    refuse("sequenceDiagram\n A->>B: x\n par p\n A->>B: y\n end", "par frame");
+    refuse("sequenceDiagram\n A->>B: x\n Note left of A: n", "leftOf note");
+    refuse("sequenceDiagram\n autonumber\n A->>B: x", "autonumber");
+    refuse("sequenceDiagram\n box b\n participant A\n participant B\n end\n A->>B: x", "box block");
+    refuse(
+        "sequenceDiagram\n participant A\n participant B\n A<->B: z",
+        "arrowhead at the source end",
+    );
+    refuse(
+        "stateDiagram-v2\n [*] --> s\n s --> t\n state f <<fork>>\n f --> t",
+        "fork pseudo-state",
+    );
+    refuse(
+        "stateDiagram-v2\n [*] --> s\n s --> t\n note right of s: memo",
+        "state note",
+    );
+    refuse("erDiagram\n A ||--o{ A : self", "er self-relation");
+    refuse("pie\n \"a\" : 0\n \"b\" : 0", "zero total");
+}
+
+#[test]
+fn probe_and_full_agree_for_every_kind() {
+    for (src, cols) in [
+        (STATE_MMD, 120usize),
+        (ER_MMD, 120),
+        (SEQ_MMD, 140),
+        (PIE_MMD, 80),
+        (SEQ_DENSE_MMD, 140),
+    ] {
+        clear_cache();
+        assert!(
+            matches!(probe(src, cols, false), Outcome::Unknown),
+            "probe must not run the engine"
+        );
+        let full = terminal_ascii(src, cols, false);
+        let p = probe(src, cols, false);
+        match (full, p) {
+            (Some(art), Outcome::Art(a)) => assert_eq!(a, art, "kind probe disagrees"),
+            (None, Outcome::Source) => {}
+            (f, got) => panic!("kind probe disagrees: full={} probe={got:?}", f.is_some()),
+        }
+    }
+}
+
+#[test]
+#[ignore] // measure engine cost per kind at the node/edge caps
+fn measure_kind_caps() {
+    use std::time::Instant;
+    for path in [
+        "/tmp/opencode/rv/big_state.mmd",
+        "/tmp/opencode/rv/big_seq.mmd",
+        "/tmp/opencode/rv/big_er.mmd",
+        "/tmp/opencode/rv/big_pie.mmd",
+    ] {
+        let src = std::fs::read_to_string(path).unwrap();
+        for cols in [120usize, 220] {
+            clear_cache();
+            let t = Instant::now();
+            let ok = terminal_ascii(&src, cols, false).is_some();
+            println!("CAP {:?} cols={cols} ok={ok} {:?}", path.rsplit('/').next().unwrap(), t.elapsed());
+        }
+    }
 }

@@ -436,7 +436,7 @@ mod tests {
             }
         }
         assert!(open.is_none(), "balanced fences");
-        assert_eq!(fences.len(), 6, "six fenced blocks in the example");
+        assert_eq!(fences.len(), 8, "eight fenced blocks in the example");
         // box art and unicode art vectorize, themed for either style
         for i in 0..2 {
             assert_eq!(fences[i].0, ["", "text"][i], "block {i} info string");
@@ -446,17 +446,17 @@ mod tests {
                 assert!(apply_theme(&fences[i].0, &raw, dark).is_some(), "block {i} themes");
             }
         }
-        // the three mermaid diagrams parse with the built-in engine, in
+        // the five mermaid diagrams parse with the built-in engine, in
         // both palettes
-        for i in 2..5 {
+        for i in 2..7 {
             assert_eq!(fences[i].0, "mermaid", "block {i} info string");
             for dark in [true, false] {
                 assert!(engine_svg("mermaid", &fences[i].1, dark).is_some(), "mermaid block {i} must render (dark={dark})");
             }
         }
         // the grid table is the deliberate rejection: it stays searchable text
-        assert_eq!(fences[5].0, "");
-        assert!(engine_svg("", &fences[5].1, false).is_none(), "the data table must stay text");
+        assert_eq!(fences[7].0, "");
+        assert!(engine_svg("", &fences[7].1, false).is_none(), "the data table must stay text");
     }
 
     #[test]

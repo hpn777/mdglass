@@ -59,6 +59,30 @@ pie showData
   "others" : 38
 ```
 
+## States and entities
+
+```mermaid
+stateDiagram-v2
+  [*] --> Idle
+  Idle --> Running: start
+  Running --> Idle: stop
+  Running --> Done: finish
+  Done --> [*]
+```
+
+```mermaid
+erDiagram
+  BOOK ||--o{ CHAPTER : contains
+  BOOK {
+    string title
+    string isbn
+  }
+  CHAPTER {
+    int no
+    string heading
+  }
+```
+
 ## Stays as text
 
 Data tables keep their content searchable and copyable on purpose, and so

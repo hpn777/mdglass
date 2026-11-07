@@ -220,6 +220,63 @@ The layout does not depend on width; only rasterization does. Memoize
   on one line (`A -->|l| B[x] --> C[y]`) mis-tokenize; mermaid.js would
   parse them differently. Fixing it belongs upstream or in P1.5.
 
+### Phase-3 implementation notes (built as specced; deltas and honest limits)
+
+- One `raster()` dispatcher routes every admitted kind: Flowchart/State/Er
+  share `graph_raster` (kind gates inside), Sequence gets `sequence_raster`,
+  Pie becomes `pie_list` — title plus `label  [value]  pct%` rows (the raw
+  value column keeps rounded shares honest; `showData` legends print as
+  mermaid shows them).
+- State: `[*]` start/end pseudo-states draw as one dot (● start, ◉ end;
+  plain `o`/`@`) — a 16 px circle has no honest box reading at cell scale.
+  Their footprint is the single cell, which slides a small spiral outward
+  until it is off every box, off every frame line, and a cell clear of any
+  box so the arrow into it has a head; the engine polyline endpoints are
+  re-aimed at the cell actually drawn. Composite anchors (`Running -->
+  Working`) were hidden nodes *not* listed in their own subgraph's members;
+  they now enter `anchors` via `anchor_subgraph`, so such edges terminate
+  at the frame like the SVG.
+- Sequence: lanes map to columns, events claim rows top-down
+  (`claim_rows`, slide prefers down to preserve order — frames are claimed
+  before messages so an arrow can never erase a wall). Boxes and notes
+  don't claim rows (three head boxes legitimately share a band): they scan
+  for a band of cells that nothing EDGE/TEXT owns (`band_clear`). Frame
+  section labels snap to the *claimed* wall/divider row; a label and its
+  keyword share one pentagon ("opt [debug]") so same-line labels append.
+  Activation bars draw one column right of the lane (a 10 px bar has no
+  honest reading ON the lane and overwriting `│` with `║` was rejected in
+  review), under messages so arrows cross it as the SVG draws them. Only
+  alt/opt/else frames, `Note over`, ActorBox actors; autonumber, boxes,
+  par/loop variants of frames, leftOf/rightOf notes, source-end arrowheads
+  and stick figures refuse whole.
+- `emit` now glyph-converts only cells with a routing mask: the sequence
+  raster draws finished glyphs (mask 0) and was silently flattening `┐ ┘ │
+  ╌` to `─` — flowchart art is untouched (masked cells only, dumps verified
+  byte-identical before and after).
+- ER: attribute separator `---` inside a box label draws as a full-width
+  rule; relations also print as a `Relationships:` list under the diagram
+  using the exact crow's-foot notation (`||--o{` etc.), mirrored per end,
+  because the notation cannot fit one cell per glyph. Self-relations refuse.
+- Edge label placement learned to float: rows ±2 and columns ±4 from the
+  anchor (SVG hangs labels loosely), preferring one column of air from
+  neighbouring labels — falling back to touching rather than refusing.
+  Flowchart art is byte-identical under the wider search (dumps re-verified).
+- Costs at the caps (release, one full ladder ≤2 variants): big state
+  0.3 s, big sequence 0.06 s, big ER 1.0 s, pie 0.5 ms — all refusals at
+  the pathological end are cheaper (≤1.4 s worst observed). The flowchart
+  40n/60e budget (1.7–4.7 s per variant, worker-thread only) stays the
+  binding cap; no per-kind caps added.
+- Honest known limits: `sequenceDiagram` layouts where the crate itself
+  overlaps elements (self-loop stubs hanging into notes or foot boxes —
+  `seq_dense` fixture) refuse exactly where no row band survives; a 40-slice
+  pie refuses (`pie data shape not understood`: legend/slices mismatch);
+  33-state graphs with back-jumps refuse at `two routes merge` like equally
+  dense flowcharts do. All fall back to the code block, GUI unaffected.
+- Upstream flake found while testing: bare `A<->B: z` without participant
+  declarations parses into a phantom participant in *some* processes
+  (crate tokenizer + HashMap state); with declared participants it fails
+  strict parsing deterministically, so tests use the declared form.
+
 ## Phases and gates
 
 - **P0 feasibility**: prototype raster with the full test set: 3-node LR,
