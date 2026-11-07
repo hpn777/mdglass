@@ -1471,6 +1471,27 @@ fn boxes_and_notes_stay_where_they_were_written() {
     ] {
         assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
     }
+    // review #3m: nested same-title frames on one rect drew as ONE
+    // frame; a bare state line, a pie line without `:`, and a malformed
+    // ER end were dropped or misprinted
+    for src in [
+        "flowchart TD\n  subgraph s1 [X]\n    subgraph s2 [X]\n      A\n    end\n  end",
+        "stateDiagram-v2\n  A --> B\n  C",
+        "pie\n  \"Dogs\" : 386\n  \"Cats\" 85\n  \"Rats\" : 15",
+        "erDiagram\n  A ||--o{ C : u\n  A |--o{ B : v",
+        "erDiagram\n  A ||--o{ C : u\n  A ||--o B : v",
+    ] {
+        for cols in [60, 100, 200] {
+            assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
+        }
+    }
+    for src in [
+        "erDiagram\n  A ||--o{B:v",
+        "erDiagram\n  A }|..|{ B : v\n  B |o--o| C : w",
+        "stateDiagram-v2\n  state \"Long name\" as L\n  [*] --> L\n  L : waits\n  L --> [*]",
+    ] {
+        assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
+    }
     // honest neighbours: members written plainly, a note mid-branch
     assert!(terminal_ascii(
         "flowchart TD\nBee --> D\nsubgraph s1 [One]\nCy\nD\nend",

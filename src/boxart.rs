@@ -1484,6 +1484,32 @@ fn graph_raster(
             }
             let count = segs.len(); // arrows == splits
             if count == 0 {
+                // a line with no arrow must be a statement the art models;
+                // a bare `Error` line is a state in mermaid that the crate
+                // drops (review #3m, 2)
+                let head = line.split_whitespace().next().unwrap_or("");
+                let known = matches!(
+                    head,
+                    "stateDiagram"
+                        | "stateDiagram-v2"
+                        | "state"
+                        | "direction"
+                        | "note"
+                        | "end"
+                        | "classDef"
+                        | "class"
+                        | "hide"
+                        | "title"
+                        | "accTitle"
+                        | "accDescr"
+                        | "---"
+                        | "--"
+                        | "}"
+                        | "{"
+                ) || line.contains(':');
+                if !known {
+                    return Err(gate("a state line the parser may skip", false));
+                }
                 continue;
             }
             segs.push(rest);
@@ -1566,6 +1592,80 @@ fn graph_raster(
                 .unwrap_or(true)
         }) {
             return Err(gate("an entity name the list cannot show", false));
+        }
+        // the list prints the crate's decorations, which cannot hold a
+        // malformed end: `|--o{` printed as `||--o{` ("exactly one"). Each
+        // relation, in order, must print as the source wrote it (review
+        // #3m, 4); word forms (`one or more`) refuse — over-refusal only
+        const LEFT: [&str; 4] = ["|o", "||", "}o", "}|"];
+        const RIGHT: [&str; 4] = ["o|", "||", "o{", "|{"];
+        let mut rels: Vec<(&str, &str, &str)> = Vec::new();
+        let mut depth = 0i32;
+        let mut fence = false;
+        for raw in src.lines() {
+            let line = raw.trim();
+            if line == "---" {
+                fence = !fence;
+                continue;
+            }
+            if fence || line.is_empty() || line.starts_with("%%") {
+                continue;
+            }
+            if depth > 0 {
+                depth += line.matches('{').count() as i32 - line.matches('}').count() as i32;
+                continue;
+            }
+            let bare: String = line.split('"').step_by(2).collect();
+            if !(bare.contains("--") || bare.contains("..")) {
+                depth += bare.matches('{').count() as i32 - bare.matches('}').count() as i32;
+                continue;
+            }
+            // the token sits around the first `--`/`..`, spaced or not
+            // (`A ||--o{B:v` is valid): 2 end chars, separator, 2 end chars
+            let sep_at = match (line.find("--"), line.find("..")) {
+                (Some(a), Some(b)) => a.min(b),
+                (a, b) => a.or(b).unwrap_or(0),
+            };
+            let rel = (sep_at >= 2 && line.is_char_boundary(sep_at - 2))
+                .then(|| line.get(sep_at - 2..sep_at + 4))
+                .flatten()
+                .filter(|t| {
+                    LEFT.contains(&&t[..2])
+                        && matches!(&t[2..4], "--" | "..")
+                        && RIGHT.contains(&&t[4..])
+                });
+            let Some(tok) = rel else {
+                return Err(gate("an ER relation the list may misprint", false));
+            };
+            let from = line[..sep_at - 2].trim();
+            let to = line[sep_at + 4..].split(':').next().unwrap_or("").trim();
+            if from.is_empty()
+                || to.is_empty()
+                || from.contains(char::is_whitespace)
+                || to.contains(char::is_whitespace)
+            {
+                return Err(gate("an ER relation the list may misprint", false));
+            }
+            rels.push((from, tok, to));
+        }
+        if rels.len() != layout.edges.len() {
+            return Err(gate("an ER relation the list may misprint", false));
+        }
+        for (e, (a, tok, b)) in layout.edges.iter().zip(&rels) {
+            let sep = if matches!(e.style, mermaid_rs_renderer::ir::EdgeStyle::Dotted) {
+                ".."
+            } else {
+                "--"
+            };
+            let printed = format!(
+                "{}{}{}",
+                er_card(e.start_decoration, true),
+                sep,
+                er_card(e.end_decoration, false)
+            );
+            if e.from != *a || e.to != *b || printed != *tok {
+                return Err(gate("an ER relation the list may misprint", false));
+            }
         }
     }
     let mut g = Grid::new(cols, rows);
@@ -1709,6 +1809,20 @@ fn graph_raster(
             // skipping a small frame silently drops its title and membership
             return Err(gate("subgraph frame too small to draw", true));
         };
+        // two frames whose walls share cells read as ONE frame: nested
+        // subgraphs given the same rect drew one frame where the source
+        // wrote two (review #3m, 1)
+        let on_wall = |r: &Rect, x: i32, y: i32| {
+            ((x == r.x0 || x == r.x1) && (r.y0..=r.y1).contains(&y))
+                || ((y == r.y0 || y == r.y1) && (r.x0..=r.x1).contains(&x))
+        };
+        let shares = |prev: &Rect| {
+            (f.x0..=f.x1).any(|x| on_wall(prev, x, f.y0) || on_wall(prev, x, f.y1))
+                || (f.y0..=f.y1).any(|y| on_wall(prev, f.x0, y) || on_wall(prev, f.x1, y))
+        };
+        if frames.iter().any(shares) {
+            return Err(gate("two frames drawn on one wall", true));
+        }
         if !title.is_empty() && !printable(title) {
             return Err(gate("subgraph title has control characters", false));
         }
@@ -3967,8 +4081,10 @@ fn pie_list(src: &str, layout: &Layout, cols: usize) -> Result<Vec<String>, Fail
         if matches!(head, "pie" | "showData" | "title") {
             continue;
         }
+        // any other line is a slice: mermaid rejects one without `:`, and
+        // skipping it recomputed every share without it (review #3m, 3)
         let Some((label, value)) = line.rsplit_once(':') else {
-            continue; // comments and blank furniture
+            return Err(gate("a pie line the parser may not understand", false));
         };
         let vtext = value.trim();
         let Ok(value) = vtext.parse::<f32>() else {

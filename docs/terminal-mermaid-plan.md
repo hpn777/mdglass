@@ -391,7 +391,11 @@ The layout does not depend on width; only rasterization does. Memoize
   fence holding any backslash is read as one run of letters, since a
   `\`-escaped break folds a quoted key across lines (#3f, 5). State
   keeps the canonical arrow audit: its grammar has no open or text
-  link forms.
+  link forms. A state line with no arrow must open with a statement
+  keyword or carry a `:` description — a bare `Error` line is a state
+  in mermaid that the crate drops (#3m, 2). Two frames whose walls
+  share any cell refuse: nested subgraphs given one rect drew as a
+  single frame (#3m, 1).
   Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, quoted note actors (mermaid gives `Note over "C"` a lane of its
@@ -412,7 +416,11 @@ The layout does not depend on width; only rasterization does. Memoize
   gate compared every relation to the art width and refused even a single
   short relation at any window size, review #3b minor). Self-relations,
   empty relation lists (would draw boxes the source never related) and
-  entity names carrying the list's own separators refuse.
+  entity names carrying the list's own separators refuse. Every
+  relation line must carry one of the 4×4 crow's-foot pairs and print,
+  in order, exactly as written: the list prints the crate's
+  decorations, which turned a malformed `|--o{` into `||--o{` ("exactly
+  one"); mirrored and word forms refuse (review #3m, 4).
 - Edge label placement learned to float: rows ±2 and columns ±4 from the
   anchor (SVG hangs labels loosely), preferring one column of air from
   neighbouring labels — falling back to touching rather than refusing.
@@ -454,12 +462,13 @@ The layout does not depend on width; only rasterization does. Memoize
   value while the legend keeps source order (zipping pairs wrong names
   with wrong numbers — each row reads its own slice's label/value), and
   the renderer DROPS slices below ~1% share — so every written slice must
-  appear in the layout, by label and value, or the pie refuses (
-  repeated labels refuse too — mermaid keeps the first value and merges
-  the slice, so a list printing every row would invent a slice (#3c, 7);
-  and `pie`/`showData`/`title` leading lines are chart furniture, not
-  slices, so `pie title Sales: Q1` draws (#3c note))a
-  1-in-100000 pie draws no art, review #3 B5).
+  appear in the layout, by label and value, or the pie refuses (a
+  1-in-100000 pie draws no art, review #3 B5). Repeated labels refuse
+  too — mermaid keeps the first value and merges the slice, so a list
+  printing every row would invent a slice (#3c, 7). `pie`/`showData`/
+  `title` leading lines are chart furniture, not slices, so `pie title
+  Sales: Q1` draws (#3c note); any other line without `:` refuses, since
+  mermaid rejects it and skipping it recomputed every share (#3m, 3).
 - Honest known limits: `sequenceDiagram` layouts where the crate itself
   overlaps elements (consecutive frames sharing a wall row, self-loop
   stubs fused into notes or foot boxes — `seq_dense` fixture) refuse
