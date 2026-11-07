@@ -14,8 +14,10 @@ A fast, tiny Markdown viewer for Linux, for the terminal and the GNOME desktop.
 Download from the [latest release](https://github.com/hpn777/mdglass/releases/latest):
 
 ```bash
-sudo apt install ./mdglass_0.1.0-3_amd64.deb            # Ubuntu 22.04+ / Debian
-flatpak install --user ./mdglass-0.1.0-x86_64.flatpak   # any distro (GNOME window)
+sudo apt install ./mdglass_*_amd64.deb       # Ubuntu 22.04+ / Debian 12+; the
+                                             # --gui window wants GTK 4.12+
+                                             # (Ubuntu 23.10+, Debian 13+)
+flatpak install --user ./mdglass-*.flatpak   # any distro, GNOME window included
 ```
 
 Or from source:
