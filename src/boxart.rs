@@ -842,7 +842,14 @@ fn flow_keyword_line_ok(head: &str, line: &str) -> bool {
         "flowchart" | "graph" => true,
         "end" => w.len() == 1,
         "direction" => w.len() == 2 && matches!(w[1], "TB" | "TD" | "BT" | "RL" | "LR"),
-        "class" => !linky && w.len() == 3,
+        // `class A&B foo` is valid, but a shape, quote or `:::` in it is
+        // a parse error whose words the art would drop (review #3j, 2)
+        "class" => {
+            !linky
+                && w.len() == 3
+                && !line.contains(":::")
+                && !line.contains(['[', ']', '(', ')', '{', '}', '<', '>', '|', '"', '@'])
+        }
         "click" => {
             if linky || w.len() < 3 {
                 return false;
@@ -863,7 +870,16 @@ fn flow_keyword_line_ok(head: &str, line: &str) -> bool {
                 _ => false,
             }
         }
-        // classDef / style / linkStyle / subgraph carry free-form text
+        // a style tail takes only `key:value,..` tokens (`#`, `%`, units,
+        // spaces): a shape, quote, `&`, `@`, `:::` or `-` word is a parse
+        // error, and the crate would drop `C[Box]` silently (review #3j, 2)
+        "classDef" | "style" | "linkStyle" => {
+            !linky
+                && !line.contains(":::")
+                && !line.contains(['[', ']', '(', ')', '{', '}', '<', '>', '|', '&', '"', '@'])
+                && !w.iter().any(|t| t.starts_with('-'))
+        }
+        // a subgraph line's `[title]` and quoted id carry free text
         _ => !linky,
     }
 }
@@ -1191,6 +1207,12 @@ fn graph_raster(
         // per open subgraph: has it any member yet? mermaid draws an EMPTY
         // subgraph as a box, the crate drops it (review #3i, 2)
         let mut filled: Vec<bool> = Vec::new();
+        // each node's subgraph (by declaration number): mermaid gives a node
+        // named in two subgraphs to the one that CLOSES first, which can
+        // empty the other into a titled box the crate drops (review #3j, 1)
+        let mut member_of: Vec<(&str, usize)> = Vec::new();
+        let mut open_no: Vec<usize> = Vec::new();
+        let mut opened = 0usize;
         for (no, raw) in ls.iter().enumerate() {
             if !stmt(no, raw) {
                 continue;
@@ -1208,11 +1230,11 @@ fn graph_raster(
             {
                 return Err(gate("a keyword spelled as an id", false));
             }
-            // subgraph nesting: an edge landing on a subgraph INSIDE another
-            // subgraph routes to strokes no element owns (review #3f, 6)
             if SKIP.contains(&head) && !flow_keyword_line_ok(head, line) {
                 return Err(gate("a keyword line with words mermaid rejects", false));
             }
+            // subgraph nesting: an edge landing on a subgraph INSIDE another
+            // subgraph routes to strokes no element owns (review #3f, 6)
             if head == "subgraph" {
                 let id = flow_subgraph_id(line);
                 if !open.is_empty() {
@@ -1223,10 +1245,13 @@ fn graph_raster(
                 }
                 open.push(id);
                 filled.push(false);
+                open_no.push(opened);
+                opened += 1;
                 continue;
             }
             if head == "end" {
                 open.pop();
+                open_no.pop();
                 if filled.pop() == Some(false) {
                     return Err(gate("an empty subgraph mermaid draws as a box", false));
                 }
@@ -1257,6 +1282,17 @@ fn graph_raster(
             }
             if let Some(f) = filled.last_mut() {
                 *f = true;
+            }
+            if let Some(&k) = open_no.last() {
+                for &i in &line_ids {
+                    match member_of.iter().find(|(m, _)| *m == i) {
+                        Some(&(_, j)) if j != k => {
+                            return Err(gate("a node listed in two subgraphs", false));
+                        }
+                        Some(_) => {}
+                        None => member_of.push((i, k)),
+                    }
+                }
             }
             ids.append(&mut line_ids);
             pairs.extend(line_pairs);

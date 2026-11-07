@@ -361,7 +361,12 @@ The layout does not depend on width; only rasterization does. Memoize
   no link token on `class`/`click`/`style`/`classDef`/`linkStyle`/
   `subgraph` lines, `class <ids> <name>` exactly, `click` within its
   href/call/callback grammar, `direction` with one known value, `end`
-  alone (#3i, 3); and two edges between the same
+  alone (#3i, 3); `style`/`classDef`/`linkStyle` tails hold only
+  `key:value,..` tokens and `class` lines no shape, quote or `:::` —
+  `style A color:red C[Box]` is a mermaid parse error whose `Box` the
+  art would drop (#3j, 2); a node named in two subgraphs refuses, since
+  mermaid gives it to the one that closes first and draws the other,
+  emptied, as a titled box (#3j, 1); and two edges between the same
   pair of boxes must each keep cells of their own outside the boxes,
   or the raster has drawn two edges as one arrow (#3f, 1) — nor may
   they share one arrowhead. Every visible box must also SAY what the

@@ -1350,6 +1350,20 @@ fn mermaid_only_boxes_and_memberships_refuse() {
     ] {
         assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
     }
+    // review #3j (1): a node named in two subgraphs goes to the one that
+    // closes first in mermaid, leaving the other an empty titled box
+    // (2): style tails take `key:value` tokens only; `C[Box]` or `& C`
+    // is a mermaid parse error the crate silently drops
+    for src in [
+        "flowchart TD\n  subgraph s1 [One]\n    A\n  end\n  subgraph s2 [Two]\n    A\n  end",
+        "flowchart TD\n  A --> B\n  style A color:red C[Box]",
+        "flowchart TD\n  A --> B\n  classDef foo fill:#f00 & C",
+        "flowchart TD\n  A --> B\n  linkStyle 0 stroke:red C:::x",
+        "flowchart TD\n  A --> B\n  style A fill:#f00 C -> D",
+        "flowchart TD\n  A --> B\n  class A[Box] foo",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
     // the mermaid-valid forms of the same lines keep drawing
     for src in [
         "flowchart TD\n  A --> B\n  click A href \"http://x\" \"tip\" _blank",
@@ -1358,6 +1372,9 @@ fn mermaid_only_boxes_and_memberships_refuse() {
         "flowchart TD\n  A --> B\n  click A \"http://x\" \"tip\"",
         "flowchart TD\n  A --> B\n  click A callback",
         "flowchart TD\n  A --> B\n  class A,B foo",
+        "flowchart TD\n  A --> B\n  class A&B foo",
+        "flowchart TD\n  A --> B\n  style B fill:#bbf,stroke:#f66,stroke-width:2px,stroke-dasharray: 5 5",
+        "flowchart TD\n  A --> B\n  linkStyle 0,1 stroke:red",
         "flowchart TD\n  A --> B\n  classDef foo fill:#f00,stroke-width:2px",
         "flowchart TD\n  subgraph s1\n    direction LR\n    A --> B\n  end",
         "flowchart LR\n  A --> B\n  subgraph S [Has --> arrow]\n    B\n  end",
