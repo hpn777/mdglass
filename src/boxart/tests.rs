@@ -1512,11 +1512,21 @@ fn boxes_and_notes_stay_where_they_were_written() {
         "stateDiagram-v2\n  [*] --> s2\n  s2 : This is a state description",
         "stateDiagram-v2\n  [*] --> C\n  state C {\n    [*] --> D\n  }\n  C : desc",
         "stateDiagram-v2\n  A --> B\n  state C {\n  }",
+        // review #3p: a block filled only by `direction`, a state the
+        // crate gives to an earlier block, the crate's own marker names
+        "stateDiagram-v2\n  state C {\n    direction LR\n  }\n  A --> B",
+        "stateDiagram-v2\n  state D {\n    [*] --> X\n  }\n  state C {\n    state X\n  }\n  A --> D",
+        "stateDiagram-v2\n  [*] --> A\n  __start_root__ --> B",
     ] {
         for cols in [60, 100, 200] {
             assert_eq!(terminal_ascii(src, cols, false), None, "{src} @{cols}");
         }
     }
+    // the mermaid.live default at 60 cols put two heads back to back
+    // (`iPhone ┐◄►┌ Car`); it refuses there and draws from 70
+    let xmas = "flowchart TD\n    A[Christmas] -->|Get money| B(Go shopping)\n    B --> C{Let me think}\n    C -->|One| D[Laptop]\n    C -->|Two| E[iPhone]\n    C -->|Three| F[fa:fa-car Car]";
+    assert_eq!(terminal_ascii(xmas, 60, false), None);
+    assert!(terminal_ascii(xmas, 80, false).is_some());
     for src in [
         "erDiagram\n  CUSTOMER ||--o{ ORDER : \"places order\"",
         "erDiagram\n  A ||--o{ B : \"has: many\"",

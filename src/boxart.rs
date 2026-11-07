@@ -915,6 +915,9 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
         t == "[*]"
             || (!t.is_empty()
                 && t.chars().all(|c| c.is_alphanumeric() || c == '_')
+                // `__start_root__` is the crate's OWN start marker name: a
+                // state written so drew as ● (review #3p, 2)
+                && !t.starts_with("__")
                 && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(t))
                 && !t.to_ascii_lowercase().starts_with("statediagram"))
     };
@@ -933,6 +936,8 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
     // per open `state X {` block: has it any statement yet? an empty one
     // is a mermaid render error the art would silently drop (#3o, 5)
     let mut filled: Vec<bool> = Vec::new();
+    // every `state ID {` written, which must reach the layout as a frame
+    let mut blocks: Vec<&str> = Vec::new();
     let mut aliased: Vec<(&str, &str)> = Vec::new();
     let mut declared: Vec<&str> = Vec::new();
     for (no, raw) in ls.iter().enumerate() {
@@ -944,8 +949,14 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
             continue;
         }
         if line == "}" {
+            // only a member fills a block — a transition, a `state` line,
+            // a nested block that is itself filled — never `direction` or
+            // `class` (review #3p, 1)
             if filled.pop() != Some(true) {
                 return Err(refuse());
+            }
+            if let Some(f) = filled.last_mut() {
+                *f = true;
             }
             continue;
         }
@@ -954,9 +965,6 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
             "stateDiagram" | "stateDiagram-v2" | "hide empty description"
         ) {
             continue;
-        }
-        if let Some(f) = filled.last_mut() {
-            *f = true;
         }
         // the crate turns a literal `\n` into a line break mermaid never
         // draws (review #3o, 2)
@@ -1003,8 +1011,12 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
                     // transition names Foo too (review #3n, 9)
                     declared.push(body);
                 }
+                let id = body.rsplit(char::is_whitespace).next().unwrap_or(body);
                 if block {
+                    blocks.push(id);
                     filled.push(false);
+                } else if let Some(f) = filled.last_mut() {
+                    *f = true;
                 }
                 continue;
             }
@@ -1032,6 +1044,9 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
             }
             in_transition.push(from);
             in_transition.push(to);
+            if let Some(f) = filled.last_mut() {
+                *f = true;
+            }
             continue;
         }
         // `ID : description` refuses: mermaid shows the description
@@ -1045,6 +1060,22 @@ fn state_grammar(src: &str, layout: &Layout) -> Result<(), Fail> {
     for id in aliased.iter().map(|(i, _)| i).chain(declared.iter()) {
         if !in_transition.contains(id) {
             return Err(refuse());
+        }
+    }
+    // each written block must BE a frame with members: the crate gives a
+    // state to the first block naming it, emptying a later one it then
+    // drops (review #3p, 1)
+    for id in &blocks {
+        let title = aliased
+            .iter()
+            .find(|(i, _)| i == id)
+            .map_or(*id, |(_, d)| *d);
+        let framed = layout
+            .subgraphs
+            .iter()
+            .any(|sg| sg.label.trim() == title.trim() && !sg.nodes.is_empty());
+        if !framed {
+            return Err(gate("a composite state the drawing lost", true));
         }
     }
     // an aliased box shows the alias exactly as written
@@ -2580,6 +2611,36 @@ fn graph_raster(
             }
         } else {
             return Err(gate("no free row for an edge label", true));
+        }
+    }
+
+    // two heads of DIFFERENT edges touching back to back (`◄►`, `▲` over
+    // `▼`) read as one double-headed connector between the two far boxes
+    // (review #3p minor, the mermaid.live default example at 60 cols)
+    let head_at: Vec<((i32, i32), usize)> = drawn
+        .iter()
+        .enumerate()
+        .flat_map(|(i, d)| d.heads.keys().map(move |c| (*c, i)))
+        .collect();
+    let glyph = |c: (i32, i32)| g.get(c.0, c.1).map(|c| c.ch).unwrap_or(' ');
+    let (hl, hr) = if plain {
+        ('<', '>')
+    } else {
+        ('\u{25c4}', '\u{25ba}')
+    };
+    let (hu, hd) = if plain {
+        ('^', 'v')
+    } else {
+        ('\u{25b2}', '\u{25bc}')
+    };
+    for &((x, y), i) in &head_at {
+        let back_to_back = head_at.iter().any(|&((x2, y2), j)| {
+            j != i
+                && ((y2 == y && x2 == x + 1 && glyph((x, y)) == hl && glyph((x2, y2)) == hr)
+                    || (x2 == x && y2 == y + 1 && glyph((x, y)) == hu && glyph((x2, y2)) == hd))
+        });
+        if back_to_back {
+            return Err(gate("two arrowheads read as one double-headed line", true));
         }
     }
 

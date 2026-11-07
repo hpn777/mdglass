@@ -395,11 +395,15 @@ The layout does not depend on width; only rasterization does. Memoize
   #3o): the header, `direction XX`, `hide empty description`, `ID -->
   ID[ : label]` with no arrow-like text in the label (the crate tries
   its arrow tokens in list order, so `done <-- ok` split the line into
-  invented boxes), `state ID {` never left empty, `state "Desc" as ID[
+  invented boxes), `state ID {` never left empty — only a transition,
+  a `state` line or a filled nested block fills it, and every block
+  must reach the layout as a frame with members (#3p, 1) — `state
+  "Desc" as ID[
   {]` (once per id), a bare `state ID` only when a transition names ID
   too, `}`, and `classDef`/`class` lines within the flowchart keyword
   grammar. No line may hold a `\` (the crate breaks a literal `\n`). An
-  id is `[*]` or word characters and never a keyword; an aliased id
+  id is `[*]` or word characters, never a keyword, never `__`-prefixed
+  (the crate's own `__start_root__` marker names, #3p, 2); an aliased id
   must take part in a transition and its box read exactly as written.
   Everything else refuses — `ID : description` (mermaid shows the
   description without the id the crate prints above it, and drops it
@@ -407,7 +411,9 @@ The layout does not depend on width; only rasterization does. Memoize
   states), `:::` shorthand, `<<choice>>`, concurrency `--`,
   keyword-named states, `click`. Two frames whose walls
   share any cell refuse: nested subgraphs given one rect drew as a
-  single frame (#3m, 1).
+  single frame (#3m, 1). Two arrowheads of different edges back to back
+  (`◄►`, `▲` over `▼`) refuse: they read as one double-headed connector
+  (#3p minor; the mermaid.live default example at 60 columns).
   Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, quoted note actors (mermaid gives `Note over "C"` a lane of its
