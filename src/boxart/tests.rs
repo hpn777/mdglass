@@ -37,7 +37,6 @@ const PIE_MMD: &str =
     "pie showData title Browser share\n \"Chrome\" : 65.1\n \"Safari\" : 19.2\n \"Other\" : 15.7\n";
 const FAN_BACK: &str = "flowchart LR\n A[fetch] --> P[parse]\n B[read] --> P\n C[stdin] --> P\n P --> O1[json]\n P --> O2[table]\n P --> O3[html]\n O3 --> A";
 const MULTI_SELF: &str = "flowchart LR\n A[start] ==> B[work]\n A --> B\n A -.-> B\n B --> B";
-const SEQUENCE: &str = "sequenceDiagram\n Alice->>Bob: hello\n Bob-->>Alice: hi";
 const NOT_MMD: &str = "def main():\n    print('not mermaid')";
 /// the frame-runner: dagre routes the return edge along the frame's bottom
 /// border row at cell scale — the honest output is source
@@ -1214,6 +1213,106 @@ fn nested_frames_join_their_outer_wall() {
         .iter()
         .any(|l| l.trim_start().starts_with('\u{251c}') && l.contains("opt")));
     assert!(art.iter().any(|l| l.contains('\u{2551}')));
+}
+#[test]
+fn every_flowchart_link_form_is_audited() {
+    // review #3e (1): open, dotted and thick chains fell through the
+    // canonical-token scan; the crate merged the middle node into a
+    // label while mermaid keeps three nodes
+    for src in [
+        "flowchart LR\n  A --- B --- C",
+        "flowchart LR\n  A -.- B -.- C",
+        "flowchart LR\n  A -- hi --> B -- yo --> C",
+        "flowchart LR\n  A -. a .-> B -. b .-> C",
+        "flowchart LR\n  A == hi ==> B == yo ==> C",
+        // fuzz6: a self-loop the layout counts but the art never draws,
+        // and a swallowed tail printed as one long node label
+        "flowchart LR\n  Cy -- x --- Bee ==> Bee",
+        "flowchart LR\n  Cy[[Cy]] -- x --- Bee[Bee] ==> Bee[[Bee]]",
+        // a `((label))` circle rasterizes to a bare dot: the label's
+        // written words would vanish
+        "flowchart LR\n  A --> B((Bee))",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
+    // x/o arrow ends refuse outright: the flat art would flatten the
+    // cross or circle marker that carries their meaning
+    for src in [
+        "flowchart LR\n  A --x B",
+        "flowchart LR\n  A o--o B x--x C",
+        "flowchart LR\n  A x--> B",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
+    // honest forms keep drawing: text link, fan-out, edge id, long
+    // dashes, and a quoted pipe inside an edge label
+    assert!(terminal_ascii("flowchart LR\n  A -- yes --> B", 100, false).is_some());
+    assert!(terminal_ascii("flowchart LR\n  A & B --> C", 100, false).is_some());
+    assert!(terminal_ascii("flowchart LR\n  A e1@--> B", 100, false).is_some());
+    assert!(terminal_ascii("flowchart LR\n  A ----> B ----> C", 100, false).is_some());
+    assert!(terminal_ascii("flowchart LR\n  A -->|\"a|b\"| B", 100, false).is_some());
+}
+
+#[test]
+fn frontmatter_cannot_hide_a_title() {
+    // review #3e (2): YAML quoting styles, braces, a complex key and
+    // escape codes all still set the caption mermaid shows
+    for key in [
+        "\"title\": Secret words",
+        "'title': Secret words",
+        "{title: Secret words}",
+        "? title",
+        "\"ti\\x74le\": Secret words",
+    ] {
+        let src = format!("---\n{key}\n: Secret words\n---\nflowchart LR\n  A --> B");
+        assert_eq!(terminal_ascii(&src, 100, false), None, "{key}");
+    }
+    // a frontmatter that writes no words still draws (#3d behaviour)
+    assert!(terminal_ascii(
+        "---\nconfig:\n  theme: dark\n---\nflowchart LR\n  A --> B",
+        100,
+        false
+    )
+    .is_some());
+}
+
+#[test]
+fn a_quoted_note_actor_refuses() {
+    // review #3e (3): mermaid gives `Note over "C"` its own lane next
+    // to a real C; the crate merges the quoted name into C's lane
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n A->>B: m1\n Note over \"C\": n\n B->>C: m2\n",
+            100,
+            false
+        ),
+        None
+    );
+    // an unquoted name is a ghost lane in BOTH renderers: honest draw
+    assert!(terminal_ascii(
+        "sequenceDiagram\n A->>B: m1\n Note over C: n\n B->>C: m2\n",
+        100,
+        false
+    )
+    .is_some());
+}
+
+#[test]
+fn statements_that_are_not_statements_refuse() {
+    // review #3e (4): sources mermaid itself rejects may not draw as
+    // confident art that silently drops the leftovers
+    assert_eq!(
+        terminal_ascii("flowchart LR\n  A --> B C --> D", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("flowchart LR\n  A[a] B[b]", 100, false),
+        None
+    );
+    assert_eq!(
+        terminal_ascii("flowchart LR\n  A x-->\"b c\"", 100, false),
+        None
+    );
 }
 
 #[test]

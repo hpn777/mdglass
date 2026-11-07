@@ -694,6 +694,242 @@ fn graph_seg_id(seg: &str) -> Option<&str> {
     (!id.is_empty()).then_some(id)
 }
 
+/// Every flowchart link form mermaid knows, longest match first at each
+/// offset (review #3e, 1); the `x`/`o` ends live on flow_stmt's refuse
+/// list because flat art cannot show the cross or circle marker.
+const FLOW_LINKS: [&str; 20] = [
+    "-.->", "<==>", "<-->", "==>", "-->", "---", "-..-", "-.-", "~~~", "===", "<--", "<-.", ".->",
+    "o--", "x--", "--x", "--o", "==", "--", "-.",
+];
+
+fn flow_link_at(s: &str) -> Option<(&'static str, &str)> {
+    FLOW_LINKS
+        .iter()
+        .find_map(|l| s.strip_prefix(l).map(|r| (*l, r)))
+}
+
+fn flow_link_ahead(s: &str) -> Option<(&'static str, &str)> {
+    (0..s.len())
+        .filter(|i| s.is_char_boundary(*i))
+        .find_map(|i| flow_link_at(&s[i..]))
+}
+
+/// the id at a statement position: a bare word or a `"quoted name"`
+fn flow_id(s: &str) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    if let Some(r) = s.strip_prefix('"') {
+        let e = r.find('"')?;
+        return Some((&r[..e], &r[e + 1..]));
+    }
+    let e = s
+        .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
+        .unwrap_or(s.len());
+    if e == 0 {
+        return None;
+    }
+    Some((&s[..e], &s[e..]))
+}
+
+fn flow_group_end(s: &str, close: char) -> Option<&str> {
+    let mut quoted = false;
+    for (idx, c) in s.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c == close && !quoted => return Some(&s[idx..]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// shape and class suffixes after an id: `[x] ((x)) {x} >x] @{..} :::cls`
+fn flow_shape_tail(s: &str) -> Option<&str> {
+    let mut s = s;
+    loop {
+        s = s.trim_start();
+        if let Some(r) = s.strip_prefix(":::") {
+            let e = r
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+                .unwrap_or(r.len());
+            s = &r[e..];
+        } else if let Some(r) = s.strip_prefix('@') {
+            let r = r.strip_prefix('{')?;
+            let e = r.find('}')?;
+            s = &r[e + 1..];
+        } else {
+            let (open_c, close_c) = match s.chars().next() {
+                Some('[') => ('[', ']'),
+                Some('(') => ('(', ')'),
+                Some('{') => ('{', '}'),
+                Some('>') => ('>', ']'),
+                _ => return Some(s.trim_start()),
+            };
+            let r = &s[open_c.len_utf8()..];
+            let dbl = open_c != '>' && r.starts_with(open_c);
+            let r = if dbl { &r[open_c.len_utf8()..] } else { r };
+            let closed = flow_group_end(r, close_c)?;
+            if dbl && open_c == '(' && !r[..r.len() - closed.len()].trim().is_empty() {
+                // a `((label))` circle rasterizes to a bare dot: the
+                // label's written words would vanish from the picture
+                return None;
+            }
+            let closed = closed.strip_prefix(close_c)?;
+            s = if dbl {
+                closed.strip_prefix(close_c).unwrap_or(closed)
+            } else {
+                closed
+            };
+        }
+        s = s.trim_start();
+    }
+}
+
+/// One flowchart statement, fully tokenized (review #3e, 1/4): id members
+/// (shapes, `@{}`, `:::` classes) separated by link tokens, `&` fans and
+/// the text forms `-- t -->`, `-. t .->`, `== t ==>`. Any word the
+/// tokenizer cannot place — `A --> B C --> D`, `A[a] B[b]`, `A x--> "b c"`
+/// — or an `x`/`o` arrow end returns None, and the diagram refuses: a
+/// statement mermaid rejects may not draw as confident art that drops
+/// written words.
+/// ids named by a statement, and the links it writes as endpoint pairs
+type FlowStmt<'a> = (Vec<&'a str>, Vec<(&'a str, &'a str)>);
+
+fn flow_stmt(line: &str) -> Option<FlowStmt<'_>> {
+    let mut ids: Vec<&str> = Vec::new();
+    // ids between links form groups; every adjacent group pair is linked
+    // crosswise, which is exactly what `A & B --> C & D` means
+    let mut groups: Vec<Vec<&str>> = vec![Vec::new()];
+    let mut rest = line;
+    let mut need_id = true;
+    loop {
+        let t = rest.trim_start();
+        if need_id {
+            let (id, r) = flow_id(t)?;
+            ids.push(id);
+            groups.last_mut().unwrap().push(id);
+            rest = flow_shape_tail(r)?;
+            need_id = false;
+            continue;
+        }
+        if t.is_empty() {
+            let mut pairs: Vec<(&str, &str)> = Vec::new();
+            for w in groups.windows(2) {
+                for a in &w[0] {
+                    for b in &w[1] {
+                        pairs.push((*a, *b));
+                    }
+                }
+            }
+            return Some((ids, pairs));
+        }
+        if let Some(r) = t.strip_prefix('&') {
+            rest = r;
+            need_id = true;
+            continue;
+        }
+        // an edge id may stand before the arrow: `A e1@--> B` (#3e note,
+        // mermaid 11 syntax); it labels nothing, so nothing is demanded
+        let t2 = match t.find('@') {
+            Some(at)
+                if at > 0
+                    && t[..at]
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '.') =>
+            {
+                &t[at + 1..]
+            }
+            _ => t,
+        };
+        let (tok, r) = flow_link_at(t2)?;
+        if matches!(tok, "o--" | "x--" | "--x" | "--o") {
+            return None; // an arrow end the flat art would flatten away
+        }
+        groups.push(Vec::new()); // the next ids open the link's target group
+                                 // `---->` is one arrow written with extra dashes
+        let mut r = r.trim_start_matches(['-', '>', '.', '=']).trim_start();
+        if matches!(tok, "--" | "-." | "==") {
+            // a further link token turns this open form into the left
+            // half of one TEXT link: `-- hi -->` is a single edge
+            if let Some((term, after)) = flow_link_ahead(r) {
+                let ok = matches!(
+                    (tok, term),
+                    ("--", "-->" | "---")
+                        | ("-.", "-.->" | ".->" | "-.-" | "-..-")
+                        | ("==", "==>" | "===")
+                );
+                if !ok {
+                    return None;
+                }
+                // the group opened by the base IS this link's target
+                // group; the terminator merely extends the same link
+                r = after.trim_start_matches(['-', '>', '.', '=']).trim_start();
+            }
+        }
+        if let Some(rr) = r.strip_prefix('|') {
+            // the label may quote pipes: -->|"a|b"|
+            let mut quoted = false;
+            let mut done = None;
+            for (idx, c) in rr.char_indices() {
+                match c {
+                    '"' => quoted = !quoted,
+                    '|' if !quoted => {
+                        done = Some(idx);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            r = &rr[done? + 1..];
+        }
+        rest = r;
+        need_id = true;
+    }
+}
+
+/// decode YAML-style `\xHH` / `\uHHHH` escapes the way a frontmatter
+/// parser resolves them before matching a key (review #3e, 2)
+fn decode_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut it = line.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let n = match it.peek() {
+            Some('x') => 2,
+            Some('u') => 4,
+            _ => {
+                out.push(c);
+                continue;
+            }
+        };
+        it.next();
+        let hex: String = it.by_ref().take(n).collect();
+        match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+            Some(d) => out.push(d),
+            None => {
+                out.push('\\');
+                out.push_str(&hex);
+            }
+        }
+    }
+    out
+}
+
+/// the line's first word after escape decoding and after any leading
+/// quote, brace, question mark or other punctuation — frontmatter can
+/// spell a title `"title":`, `{title:`, `? title` or `"ti\\x74le":`
+fn head_word(line: &str) -> String {
+    let d = decode_escapes(line);
+    let t = d.trim_start();
+    let rest = t.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_');
+    let e = rest
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(rest.len());
+    rest[..e].to_ascii_lowercase()
+}
+
 fn graph_raster(
     src: &str,
     layout: &Layout,
@@ -725,20 +961,119 @@ fn graph_raster(
                 false,
             ));
         }
-        if line
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .next()
-            == Some("title")
-        {
+        if matches!(head_word(line).as_str(), "title" | "acctitle" | "accdescr") {
             return Err(gate("a title the art has no room for", false));
         }
     }
-    // lost-piece audit for flowchart and state (review #3d, 5): the
-    // crate's flowchart parser drops whole tails of a statement —
-    // `A -->|x| B -->|y| C` loses C, `A ~~~ B` loses B — so every node
-    // id an arrow statement names must exist in the layout, and the
-    // layout must hold at least as many edges as the source has arrows
-    if matches!(kind, DiagramKind::Flowchart | DiagramKind::State) {
+    // a leading frontmatter fence can hide a title in quoting styles,
+    // braces, a YAML complex key or escapes (`"ti\x74le":` decodes to
+    // `title` before a YAML parser matches the key); every caption word
+    // inside a CLOSED block refuses, the art has no room to draw one
+    // (review #3e, 2)
+    {
+        let ls: Vec<&str> = src.lines().collect();
+        if ls.first().is_some_and(|l| l.trim() == "---") {
+            if let Some(end) = ls[1..]
+                .iter()
+                .position(|l| matches!(l.trim(), "---" | "..."))
+            {
+                for l in &ls[1..=end] {
+                    let d = decode_escapes(l).to_ascii_lowercase();
+                    if d.split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .any(|w| matches!(w, "title" | "acctitle" | "accdescr"))
+                    {
+                        return Err(gate("a title the art has no room for", false));
+                    }
+                }
+            }
+        }
+    }
+    // lost-piece audit for flowchart (review #3d, 5; #3e, 1/4): every
+    // statement must tokenize under the FULL link grammar — open `---`,
+    // dotted `-.-`, thick `===`, text forms `-- t -->`, `&` fans — and
+    // any word the tokenizer cannot place refuses rather than trusting
+    // a parser that swallows statement tails; every named id must then
+    // survive in the layout and the edge count must cover every arrow
+    if kind == DiagramKind::Flowchart {
+        const SKIP: [&str; 11] = [
+            "flowchart",
+            "graph",
+            "subgraph",
+            "end",
+            "direction",
+            "class",
+            "classdef",
+            "style",
+            "click",
+            "linkstyle",
+            "accordion",
+        ];
+        let mut ids: Vec<&str> = Vec::new();
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        // a closed frontmatter block holds YAML keys, not statements —
+        // `config: { theme: dark }` must keep drawing (#3e honest set)
+        let ls: Vec<&str> = src.lines().collect();
+        let fm_end = if ls.first().is_some_and(|l| l.trim() == "---") {
+            ls[1..]
+                .iter()
+                .position(|l| matches!(l.trim(), "---" | "..."))
+                .map(|e| e + 1)
+        } else {
+            None
+        };
+        for (no, raw) in ls.iter().enumerate() {
+            if fm_end.is_some_and(|e| no <= e) {
+                continue;
+            }
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with("%%") || line.starts_with("---") {
+                continue;
+            }
+            let head = line
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if SKIP.contains(&head.as_str()) {
+                continue;
+            }
+            let Some((mut line_ids, line_pairs)) = flow_stmt(line) else {
+                return Err(gate("a flowchart statement the parser may misread", false));
+            };
+            ids.append(&mut line_ids);
+            pairs.extend(line_pairs);
+        }
+        // every written link with its TRUE endpoints must stand in the
+        // layout: a self-loop counted but never drawn, or a dropped tail
+        // relabelled as one longer edge, fails the multiset check
+        // (review #3e, fuzz6)
+        if layout.edges.len() != pairs.len() {
+            return Err(gate("an arrow the renderer lost or invented", true));
+        }
+        let mut expect: Vec<(String, String)> = pairs
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        let mut actual: Vec<(String, String)> = layout
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone()))
+            .collect();
+        expect.sort();
+        actual.sort();
+        if expect != actual {
+            return Err(gate("an edge the renderer moved", true));
+        }
+        for id in ids {
+            if !layout.nodes.contains_key(id) {
+                return Err(gate("a node the renderer lost", true));
+            }
+        }
+    }
+    // lost-piece audit for state (review #3d, 5): the state grammar has
+    // no open/dotted/text link forms, so the canonical arrow tokens are
+    // enough to demand every named id and arrow survive the layout
+    if kind == DiagramKind::State {
         const CANON: [&str; 4] = ["-.->", "==>", "-->", "~~~"];
         let mut arrows = 0usize;
         let mut ids: Vec<&str> = Vec::new();
@@ -2160,20 +2495,28 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                     out.notes += 1;
                     // `Note over A,B:` / `Note left of A:` name lanes at
                     // this line in mermaid; collect plain ids only
-                    let rest = line[head.len()..]
-                        .split(':')
-                        .next()
-                        .unwrap_or("");
+                    let rest = line[head.len()..].split(':').next().unwrap_or("");
                     for tok in rest.split(',').flat_map(|t| t.split_whitespace()) {
+                        if tok.starts_with('"') {
+                            // mermaid gives a QUOTED name its own lane:
+                            // `Note over "C"` next to a real C is TWO
+                            // lanes there, one here — the crate merges
+                            // them, so the honest answer is to refuse
+                            // (review #3e, 3)
+                            return Err(gate(
+                                "a quoted note actor the layout merges into another lane",
+                                false,
+                            ));
+                        }
                         let id = tok.trim_matches('"');
                         if !id.is_empty()
                             && !matches!(
                                 id.to_ascii_lowercase().as_str(),
                                 "over" | "left" | "right" | "of"
                             )
-                            && id.chars().all(|c| {
-                                c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
-                            })
+                            && id
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
                         {
                             out.appear.push(id);
                         }
@@ -2182,10 +2525,7 @@ fn seq_source_messages(src: &str) -> Result<SeqSrc<'_>, Fail> {
                 "participant" | "actor" => {
                     // the id is the FIRST word (`participant B as Bob`
                     // declares B); the lane order gate needs declarations
-                    let id = line[head.len()..]
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("");
+                    let id = line[head.len()..].split_whitespace().next().unwrap_or("");
                     if !id.is_empty() {
                         out.decls.push(id);
                     }

@@ -321,15 +321,32 @@ The layout does not depend on width; only rasterization does. Memoize
   truncates the label upstream, #3c, 8) — and that scan guards EVERY
   kind, not just sequence: `A[hi %% x]` truncates a flowchart node and
   `A -->|a;b| B` splits a label into two nodes exactly the same way
-  (#3d, 4); a frontmatter or `title` line names a caption the graph art
-  has no room to draw, so flowchart, state and ER refuse rather than
-  silently drop the word (#3d, 6). Flowchart and state are audited for
-  LOST pieces too — the parser drops whole statement tails:
-  `A -->|x| B -->|y| C` loses C and `A ~~~ B` loses B — so every node
-  id an arrow statement names must exist in the layout and the layout
-  must hold at least as many edges as the source has arrows (#3d, 5). Only `Note over` draws — and only where a free band exists;
+  (#3d, 4). A title is harder to catch than a first word: frontmatter
+  can spell it `"title":`, `{title:`, `? title` or even `"ti\x74le":`
+  (escapes decode before YAML matches the key), so a CLOSED `---` fence
+  is word-scanned and any graph line whose decoded head word is
+  `title`/`accTitle`/`accDescr` refuses (#3d, 6; #3e, 2). Flowchart
+  statements are additionally TOKENIZED under mermaid's full link
+  grammar (#3e, 1/4): open `---`, dotted `-.-`, thick `===`,
+  bidirectional `<-->`, edge ids (`e1@-->`), quoted-pipe edge labels,
+  node shapes, `&` fans and the text forms `-- t -->`, `-. t .->`,
+  `== t ==>`; a `((label))` circle (it rasterizes to a bare dot, so
+  the label's words would vanish) and `x`/`o` arrow ends (the flat art
+  would flatten the marker away) refuse on sight. A line the tokenizer
+  cannot place — `A --> B C --> D`, `A[a] B[b]`, `A x--> "b c"`, the
+  chain `A --- B --- C` the parser merges into one labeled edge —
+  refuses without consulting the parser at all, and every id it does
+  accept must exist in the layout — moreover the parsed links, with
+  their true endpoints (`&` fans expanded crosswise), must match the
+  layout's edge multiset EXACTLY: a self-loop counted but never drawn
+  and a tail relabelled as one longer edge both fail (#3d, 5; #3e, 1
+  + fuzz6). State keeps the canonical arrow audit: its grammar has no
+  open or text link forms.
+  Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
-  notes, source-end arrowheads and stick figures refuse whole.
+  notes, quoted note actors (mermaid gives `Note over "C"` a lane of its
+  own beside a real C, the crate merges them, #3e, 3), source-end
+  arrowheads and stick figures refuse whole.
 - `emit` now glyph-converts only cells with a routing mask: the sequence
   raster draws finished glyphs (mask 0) and was silently flattening `┐ ┘ │
   ╌` to `─` — flowchart art is untouched (masked cells only, dumps verified
