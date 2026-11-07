@@ -171,6 +171,26 @@ The layout does not depend on width; only rasterization does. Memoize
   (art ⇄ source); test it in the pty smoke.
 - Resize: nothing to add — `Pager::resize` re-renders; the cache makes it cheap.
 
+### Phase-2 implementation notes (built as specced; deltas only)
+
+- `Cfg { diagrams }` defaults **false**; `Cfg::new` keeps 3 args. `main.rs`
+  gates `diagrams && (color || stdout_tty)` then plumbs the value explicitly
+  to `pager::run` and `print_plain` — never re-derived downstream.
+- `render.rs` art rows bypass `code_lines`/`wrap` entirely (a sheared box is
+  a lie): color rows get the same `38;5;252;48;5;236` shading + padding as
+  code rows, plain rows pass through untouched (boxart guarantees width and
+  prints no control chars, so art rows carry no ESC anywhere).
+- `Pager` gained the field plus an extracted `rerender()` (resize and `D`
+  both call it); it rebuilds `plain` so search matches art rows, and clamps
+  `top` because art is shorter than source.
+- First-render latency is bounded by the 40-node/60-edge caps (≤ ~1 s per
+  diagram, ×3 spacing variants worst case); layout cache makes rerenders,
+  resizes and `D` round-trips free. `--no-diagrams` is the escape hatch.
+- Upstream quirk inherited from mermaid-rs (identical in the shipped GUI,
+  so terminal and window agree): chained edges with inline node definitions
+  on one line (`A -->|l| B[x] --> C[y]`) mis-tokenize; mermaid.js would
+  parse them differently. Fixing it belongs upstream or in P1.5.
+
 ## Phases and gates
 
 - **P0 feasibility**: prototype raster with the full test set: 3-node LR,

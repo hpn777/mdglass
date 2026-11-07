@@ -25,6 +25,7 @@ OPTIONS:
     -c, --plain       no colors (default when stdout is not a terminal)
         --color       force colors, e.g. `mdglass -n --color FILE | less -R`
         --no-urls     don't show link URLs next to link text
+        --no-diagrams render mermaid fences as source (box art is on by default)
     -h, --help        print this help
     -V, --version     print version
 
@@ -36,6 +37,7 @@ KEYS:
     / ?                 search forward / backward (case-insensitive)
     n N                 next / previous match
     ] [                 next / previous file
+    D                 toggle mermaid box art / source
     q Esc               quit (moves on to the next file, if any)
 ";
 
@@ -45,6 +47,7 @@ fn main() {
     let mut gui = false;
     let mut forced_color: Option<bool> = None;
     let mut urls = true;
+    let mut diagrams = true;
 
     let stdin_piped = !termion::is_tty(&io::stdin());
     let stdout_tty = termion::is_tty(&io::stdout());
@@ -63,6 +66,7 @@ fn main() {
             "-c" | "--plain" | "--no-color" => forced_color = Some(false),
             "--color" => forced_color = Some(true),
             "--no-urls" => urls = false,
+            "--no-diagrams" => diagrams = false,
             "-" => paths.push("-".into()),
             _ if a.starts_with('-') && a.len() > 1 => {
                 eprintln!("mdglass: unknown option {a} (try --help)");
@@ -74,6 +78,10 @@ fn main() {
     let color = forced_color.unwrap_or_else(|| {
         stdout_tty && std::env::var_os("NO_COLOR").is_none() && std::env::var("TERM").as_deref() != Ok("dumb")
     });
+    // diagrams only where someone can read them: piped output without
+    // --color must reproduce the markdown source (grep for '-->' still
+    // works), the pager on any TTY gets them (ASCII when colorless)
+    let diagrams = diagrams && (color || stdout_tty);
     if paths.is_empty() && gui && !stdin_piped {
         // launched from the app grid or with no argument: empty window with Open…
         if let Err(e) = gui::run(Vec::new(), None) {
@@ -128,20 +136,20 @@ fn main() {
         return;
     }
     if no_pager || !stdout_tty {
-        print_plain(&files, color, urls);
-    } else if let Err(e) = pager::run(&files, color, urls) {
+        print_plain(&files, color, urls, diagrams);
+    } else if let Err(e) = pager::run(&files, color, urls, diagrams) {
         // No usable terminal for raw mode: fall back to a plain dump.
         eprintln!("mdglass: pager unavailable ({e}), printing instead");
-        print_plain(&files, color, urls);
+        print_plain(&files, color, urls, diagrams);
     }
     if failed {
         std::process::exit(1);
     }
 }
 
-fn print_plain(files: &[(String, String)], color: bool, urls: bool) {
+fn print_plain(files: &[(String, String)], color: bool, urls: bool, diagrams: bool) {
     let width = termion::terminal_size().map(|(w, _)| w as usize).unwrap_or(80);
-    let cfg = Cfg::new(color, width, urls);
+    let cfg = Cfg { diagrams, ..Cfg::new(color, width, urls) };
     let stdout = io::stdout();
     let mut out = stdout.lock();
     for (name, content) in files.iter() {

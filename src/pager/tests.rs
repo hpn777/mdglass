@@ -4,9 +4,13 @@
 use super::*;
 
 fn pager(docs: &[&str], height: usize) -> Pager {
+    pager_diag(docs, height, false)
+}
+
+fn pager_diag(docs: &[&str], height: usize, diagrams: bool) -> Pager {
     let files: Vec<(String, String)> =
         docs.iter().enumerate().map(|(i, d)| (format!("f{i}.md"), d.to_string())).collect();
-    Pager::new(&files, true, true, 60, height)
+    Pager::new(&files, true, true, diagrams, 60, height)
 }
 
 /// Feed raw bytes; returns false once the pager asks to exit.
@@ -129,6 +133,43 @@ fn frame_draws_from_home_with_one_row_per_line() {
     assert!(!f.ends_with("\r\n"), "a trailing newline would scroll the screen");
     let status = f.rsplit("\r\n").next().unwrap();
     assert_eq!(visible_width(status), 59, "status leaves the last column empty");
+}
+
+#[test]
+fn d_toggle_swaps_mermaid_art_and_source() {
+    let doc = "```mermaid\ngraph LR\n A[alpha] --> B[omega]\n```\n";
+    let shown = |p: &Pager| strip_ansi(&p.docs[0].lines.join("\n"));
+    // off by default (pager()): source stays source even for valid mermaid
+    let p = pager(&[doc], 24);
+    let all = shown(&p);
+    assert!(all.contains("graph") && all.contains("LR"), "source vanished with diagrams off");
+    assert!(!all.contains('►'), "art shown while toggled off");
+    // on: box art with its labels, source gone
+    let mut p = pager_diag(&[doc], 24, true);
+    let all = shown(&p);
+    assert!(all.contains('►') && all.contains("alpha") && all.contains("omega"), "no art:\n{all}");
+    assert!(!all.contains("graph"), "source leaked beside the art");
+    // D: back to source (highlight() splits tokens, so match words apart)
+    feed(&mut p, b"D");
+    let all = shown(&p);
+    assert!(all.contains("graph") && all.contains("-->"), "D did not restore source");
+    // D again: art returns (deterministic, cache or not)
+    feed(&mut p, b"D");
+    assert!(shown(&p).contains('►'), "D did not restore art");
+    // deep scroll then toggle: art is shorter than source, and the view
+    // must clamp at the new bottom instead of painting blank rows
+    feed(&mut p, b"GG");
+    p.docs[0].top = p.docs[0].lines.len() - 1;
+    feed(&mut p, b"D");
+    let vh = p.vh();
+    assert!(p.docs[0].top <= p.docs[0].lines.len().saturating_sub(vh), "top outran shortened doc");
+    assert!(shown(&p).contains("graph"), "D did not restore source");
+    // back to art, then a resize must keep whichever mode the user chose
+    feed(&mut p, b"D");
+    assert!(shown(&p).contains('►'), "D did not restore art");
+    assert!(p.frame().contains("omega"), "frame blanked: top not clamped after shortening");
+    p.resize(80, 24);
+    assert!(shown(&p).contains('►'), "resize lost the diagram mode");
 }
 
 #[test]

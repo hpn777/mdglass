@@ -12,13 +12,17 @@ pub struct Cfg {
     pub color: bool,
     pub width: usize,
     pub urls: bool,
+    /// draw ```mermaid fences as ASCII box art where the geometry is honest
+    /// (see boxart.rs); false keeps the source block. Default off so the
+    /// GUI and every existing caller are untouched; the pager opts in.
+    pub diagrams: bool,
     /// Reference-link definitions (`[label]: url`), keyed by normalized label.
     pub refs: HashMap<String, String>,
 }
 
 impl Cfg {
     pub fn new(color: bool, width: usize, urls: bool) -> Cfg {
-        Cfg { color, width, urls, refs: HashMap::new() }
+        Cfg { color, width, urls, diagrams: false, refs: HashMap::new() }
     }
 
     fn narrow(&self, by: usize) -> Cfg {

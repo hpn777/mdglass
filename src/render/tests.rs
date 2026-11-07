@@ -11,6 +11,38 @@ fn cfg_color() -> Cfg {
     Cfg::new(true, 80, true)
 }
 
+const MMD: &str = "```mermaid\ngraph LR\n A[alpha] --> B[omega]\n```\n";
+
+#[test]
+fn mermaid_fences_become_box_art_when_diagrams_on() {
+    // color: Unicode boxes inside a shaded fence, labels searchable, source gone
+    let cfg = Cfg { diagrams: true, ..cfg_color() };
+    let out = render(MMD, &cfg);
+    let all = out.join("\n");
+    let plain = strip_ansi(&all);
+    assert!(plain.contains('►') && plain.contains("alpha"), "no art: {plain}");
+    assert!(!plain.contains("graph LR"), "source beside art");
+    assert!(plain.contains("mermaid"), "fence label lost");
+    assert!(out.iter().all(|l| visible_width(l) <= 80), "art overflowed width");
+    // plain mode: pure ASCII, still fenced
+    let cfg = Cfg { diagrams: true, ..cfg_plain() };
+    let all = render(MMD, &cfg).join("\n");
+    assert!(all.contains('+') && all.contains('-') && all.contains("alpha"), "no ASCII art");
+    assert!(all.contains(">") && !all.contains('\u{25ba}'), "non-ASCII in plain art");
+    assert!(all.contains("```"), "plain fence lost");
+}
+
+#[test]
+fn diagrams_on_falls_back_and_ignores_strangers() {
+    let cfg = Cfg { diagrams: true, ..cfg_color() };
+    // broken mermaid keeps its source rows (boxart refuses -> None)
+    let out = render("```mermaid\nthis is not a diagram\n```\n", &cfg).join("\n");
+    assert!(strip_ansi(&out).contains("this is not a diagram"));
+    // other languages never enter the art path
+    let out = render("```rust\nfn a() {}\n```\n", &cfg).join("\n");
+    assert!(strip_ansi(&out).contains("fn a()"));
+}
+
 #[test]
 fn headings_render_in_both_modes() {
     let doc = "# Title\n\ntext";

@@ -38,9 +38,12 @@ In the window, use `Ctrl+F` to find, `Ctrl+O` to open, and `Ctrl++` / `Ctrl+-` t
 Prose wraps to the window; wide tables and diagrams keep their shape and scroll sideways.
 Those wraps are real line breaks, as in the terminal: find does not match a phrase split
 across two lines, copied text keeps the breaks, and resizing or zooming clears a selection.
-In the window, ```` ```mermaid ```` blocks and untyped box-art blocks are drawn as vector
-graphics in a palette that follows your light/dark setting (terminal output stays text);
-any block that cannot be drawn stays a code block.
+```` ```mermaid ```` blocks and untyped box-art blocks are drawn as diagrams: vector
+graphics in the window (in a palette that follows your light/dark setting), and honest
+ASCII box art in the terminal, where node names stay searchable text. Press `D` to flip
+between art and source, or start with `--no-diagrams`. Any diagram that cannot be drawn
+truthfully at your width stays a code block; piped output always stays markdown source,
+so `mdglass file.md | grep` works.
 `examples/diagrams.md` demos every kind, with `examples/screenshots/` as proof.
 
 See `man mdglass` for all options.

@@ -69,6 +69,7 @@ pub struct Pager {
     file: usize,
     color: bool,
     urls: bool,
+    diagrams: bool,
     width: usize,
     height: usize,
     needle: String,
@@ -79,7 +80,14 @@ pub struct Pager {
 }
 
 impl Pager {
-    pub fn new(files: &[(String, String)], color: bool, urls: bool, width: usize, height: usize) -> Pager {
+    pub fn new(
+        files: &[(String, String)],
+        color: bool,
+        urls: bool,
+        diagrams: bool,
+        width: usize,
+        height: usize,
+    ) -> Pager {
         let docs = files
             .iter()
             .map(|(name, content)| FileDoc {
@@ -95,6 +103,7 @@ impl Pager {
             file: 0,
             color,
             urls,
+            diagrams,
             width: 0,
             height: 0,
             needle: String::new(),
@@ -107,18 +116,31 @@ impl Pager {
         p
     }
 
+    /// Re-render every document at the current width and flags. Called on
+    /// resize and on the D toggle; `plain` must be rebuilt too, or search
+    /// would keep matching rows that are no longer on screen.
+    fn rerender(&mut self) {
+        let cfg = Cfg { diagrams: self.diagrams, ..Cfg::new(self.color, self.width, self.urls) };
+        for d in self.docs.iter_mut() {
+            // render() wraps to `width`; wrap() again only guards rows that cannot shrink
+            d.lines = render(&d.content, &cfg).iter().flat_map(|l| wrap(l, self.width)).collect();
+            d.plain = d.lines.iter().map(|l| fold(&strip_ansi(l))).collect();
+        }
+        // art is shorter than source: a top deep in the source must not
+        // leave the screen blank until the next keypress
+        let vh = self.vh();
+        for d in self.docs.iter_mut() {
+            d.top = d.top.min(d.lines.len().saturating_sub(vh));
+        }
+    }
+
     pub fn resize(&mut self, width: usize, height: usize) {
         let width = width.max(1);
-        if width != self.width {
-            let cfg = Cfg::new(self.color, width, self.urls);
-            for d in self.docs.iter_mut() {
-                // render() wraps to `width`; wrap() again only guards rows that cannot shrink
-                d.lines = render(&d.content, &cfg).iter().flat_map(|l| wrap(l, width)).collect();
-                d.plain = d.lines.iter().map(|l| fold(&strip_ansi(l))).collect();
-            }
-        }
-        self.width = width;
         self.height = height.max(2);
+        if width != self.width {
+            self.width = width;
+            self.rerender();
+        }
         let vh = self.vh();
         for d in self.docs.iter_mut() {
             d.top = d.top.min(d.lines.len().saturating_sub(vh));
@@ -243,6 +265,15 @@ impl Pager {
             Key::Char('N') => self.jump(true),
             Key::Char(']') => self.switch((self.file + 1) % self.docs.len()),
             Key::Char('[') => self.switch((self.file + self.docs.len() - 1) % self.docs.len()),
+            Key::Char('D') => {
+                self.diagrams = !self.diagrams;
+                self.rerender();
+                self.msg = Some(if self.diagrams {
+                    "mermaid: box art".into()
+                } else {
+                    "mermaid: source".into()
+                });
+            }
             _ => {}
         }
         true
@@ -291,9 +322,9 @@ impl Pager {
             format!(" {}{multi}  {pct:>3}%  {}/{} lines", d.name, (d.top + 1).min(total.max(1)), total)
         };
         let help = if self.docs.len() > 1 {
-            "q quit · / ? search · n N match · [ ] file "
+            "q quit · / ? search · n N match · [ ] file · D art "
         } else {
-            "q quit · / ? search · n N match "
+            "q quit · / ? search · n N match · D art "
         };
         // one column short of the edge so the terminal never scrolls
         let width = self.width.saturating_sub(1);
@@ -343,9 +374,9 @@ impl Drop for AltScreen {
     }
 }
 
-pub fn run(files: &[(String, String)], color: bool, urls: bool) -> io::Result<()> {
+pub fn run(files: &[(String, String)], color: bool, urls: bool, diagrams: bool) -> io::Result<()> {
     let (w, h) = termion::terminal_size().unwrap_or((80, 24));
-    let mut pager = Pager::new(files, color, urls, w as usize, h as usize);
+    let mut pager = Pager::new(files, color, urls, diagrams, w as usize, h as usize);
     let mut out = io::stdout().into_raw_mode()?;
     out.write_all(b"\x1b[?1049h\x1b[?25l")?;
     let _screen = AltScreen;

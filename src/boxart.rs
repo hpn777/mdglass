@@ -24,7 +24,6 @@
 
 // the renderer gets wired into render.rs in phase 2; until then its entry
 // point is only reachable from tests
-#![allow(dead_code)]
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::panic;

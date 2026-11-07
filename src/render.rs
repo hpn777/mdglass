@@ -120,6 +120,27 @@ pub fn render_lines(lines: &[Line], cfg: &Cfg) -> Vec<String> {
                 out.extend(wrap_indent(&format!("{pre}{body}"), cfg.width, &hang));
             }
             Line::Code { lang, lines } => {
+                // honest mermaid art in place of the source, when asked and
+                // possible; boxart refuses anything it cannot draw truthfully
+                if cfg.diagrams && crate::vector::is_mermaid(lang) {
+                    if let Some(art) = crate::boxart::terminal_ascii(&lines.join("\n"), cfg.width, !cfg.color)
+                    {
+                        out.push(fence_top(cfg, lang));
+                        for r in art {
+                            // never re-wrap: a sheared box is a lie; rows
+                            // arrived within cfg.width, padding only shades
+                            out.push(if cfg.color {
+                                let base = sg("38;5;252;48;5;236");
+                                let pad = " ".repeat(cfg.width.saturating_sub(visible_width(&r)));
+                                format!("{base}{r}{base}{pad}{RESET}")
+                            } else {
+                                r
+                            });
+                        }
+                        out.push(fence_bottom(cfg));
+                        continue;
+                    }
+                }
                 out.push(fence_top(cfg, lang));
                 let mut in_block = false;
                 for l in lines {

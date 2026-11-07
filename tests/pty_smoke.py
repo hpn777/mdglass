@@ -97,5 +97,19 @@ open(latin1, "wb").write(b"caf\xe9\n")
 r = subprocess.run([MDGLASS, latin1], capture_output=True)
 check("non-UTF-8 input is shown, not rejected", r.returncode == 0 and "caf\ufffd" in r.stdout.decode(), r.stderr)
 
+# mermaid box art: default on in a pager, D falls back to source, flag off,
+# and piped output stays grep-able markdown source
+mmd = doc("m.md", "```mermaid\ngraph LR\n  A[alpha] --> B[omega]\n```\n")
+out, _ = run_pty([mmd], [b"q"])
+vis = visible(out)
+check("pager shows mermaid art by default", "►" in vis and "alpha" in vis, vis[:200])
+check("art replaces the source", "graph LR" not in vis)
+out, _ = run_pty([mmd], [b"D", b"q"])
+check("D toggles back to source", "graph" in visible(out) and "-->" in visible(out))
+out, _ = run_pty(["--no-diagrams", mmd], [b"q"])
+check("--no-diagrams starts on source", "graph" in visible(out) and "►" not in visible(out))
+piped = subprocess.run([MDGLASS, os.path.join(tmp, "m.md")], capture_output=True).stdout
+check("piped mermaid stays escape-free grep-able source", b"graph LR" in piped and b"\x1b" not in piped, piped[:60])
+
 print(f"\n{len(failures)} failed" if failures else "\nall pty checks passed")
 sys.exit(1 if failures else 0)

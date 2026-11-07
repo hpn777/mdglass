@@ -27,8 +27,9 @@ clears a selection.
 Blocks fenced as \fBmermaid\fR and untyped blocks that look like box art
 are drawn as vector pictures, in a palette that follows the light/dark
 style; a block that cannot be drawn (no SVG loader,
-unparsable input) is shown as its code instead. The terminal keeps every
-such block as text.
+unparsable input) is shown as its code instead. In the terminal, mermaid
+fences are drawn as ASCII box art instead (see \fB\-\-no\-diagrams\fR and
+the \fBD\fR key); piped output always keeps the markdown source.
 .TP
 .BR \-n ", " \-\-no\-pager
 Print the rendered output to standard output instead of opening the pager.
@@ -41,6 +42,11 @@ Force colors, for example \fBmdglass \-n \-\-color FILE | less \-R\fR.
 .TP
 .B \-\-no\-urls
 Do not show link URLs after the link text.
+.TP
+.B \-\-no\-diagrams
+Render mermaid fences as their source code instead of ASCII box art.
+Box art normally appears only where a human reads it: in the pager, or
+in \fB\-n\fR output when colors are on.
 .TP
 .BR \-h ", " \-\-help
 Print help and exit.
@@ -69,6 +75,9 @@ Go to the next / previous match.
 .TP
 .BR ] " " [
 Show the next / previous file.
+.TP
+.B D
+Toggle mermaid fences between box art and source code.
 .TP
 .BR q ", " Esc
 Quit, or move on to the next file when several were given.
