@@ -1336,6 +1336,34 @@ fn mermaid_only_boxes_and_memberships_refuse() {
     ] {
         assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
     }
+    // review #3i (1): two `subgraph s1` blocks merge in mermaid (first
+    // title wins); (2) an empty subgraph is a box there; (3) a keyword
+    // line the crate skips whole may not hide words mermaid rejects
+    for src in [
+        "flowchart TD\n  subgraph s1 [X]\n    A\n  end\n  subgraph s1 [T]\n    B\n  end",
+        "flowchart TD\n  A --> B\n  subgraph Z [Empty frame]\n  end",
+        "flowchart TD\n  A --> B\n  click A --> X",
+        "flowchart TD\n  A --> B\n  class A foo X",
+        "flowchart TD\n  A --> B\n  class --> C",
+        "flowchart TD\n  A --> B\n  click A \"http://x\" \"tip\" B",
+        "flowchart TD\n  A --> B\n  style A fill:#f00 --> X",
+    ] {
+        assert_eq!(terminal_ascii(src, 100, false), None, "{src}");
+    }
+    // the mermaid-valid forms of the same lines keep drawing
+    for src in [
+        "flowchart TD\n  A --> B\n  click A href \"http://x\" \"tip\" _blank",
+        // (`click A call cb(..)` stays refused: the crate invents a node
+        // for it, review #3f, 3)
+        "flowchart TD\n  A --> B\n  click A \"http://x\" \"tip\"",
+        "flowchart TD\n  A --> B\n  click A callback",
+        "flowchart TD\n  A --> B\n  class A,B foo",
+        "flowchart TD\n  A --> B\n  classDef foo fill:#f00,stroke-width:2px",
+        "flowchart TD\n  subgraph s1\n    direction LR\n    A --> B\n  end",
+        "flowchart LR\n  A --> B\n  subgraph S [Has --> arrow]\n    B\n  end",
+    ] {
+        assert!(terminal_ascii(src, 100, false).is_some(), "{src}");
+    }
     // ids that merely START with a keyword are plain ids
     assert!(terminal_ascii(
         "flowchart LR\n  A --> endpoint\n  clickable --> A",

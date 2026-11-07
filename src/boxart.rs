@@ -787,6 +787,87 @@ fn flow_shape_tail(s: &str) -> Option<(&str, Option<&str>)> {
     }
 }
 
+/// words of a keyword line, keeping `"quoted strings"` and `(call args)`
+/// whole; None on an unterminated quote or paren
+fn flow_words(s: &str) -> Option<Vec<&str>> {
+    let mut out = Vec::new();
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let (mut quoted, mut depth) = (false, 0i32);
+        while i < b.len() && (quoted || depth > 0 || !b[i].is_ascii_whitespace()) {
+            match b[i] {
+                b'"' => quoted = !quoted,
+                b'(' if !quoted => depth += 1,
+                b')' if !quoted => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        if quoted || depth != 0 {
+            return None;
+        }
+        out.push(&s[start..i]);
+    }
+    Some(out)
+}
+
+/// a keyword line mermaid would accept with nothing left over (review
+/// #3i, 3): the crate SKIPS these lines whole, so any word mermaid would
+/// reject — `click A --> X`, `class A foo X` — vanishes from the art
+fn flow_keyword_line_ok(head: &str, line: &str) -> bool {
+    let mut unquoted: String = line.split('"').step_by(2).collect();
+    if head == "subgraph" {
+        // a `[title]` is free text: `subgraph S [Has --> arrow]` is valid
+        if let (Some(a), Some(b)) = (unquoted.find('['), unquoted.rfind(']')) {
+            if a < b {
+                unquoted.replace_range(a..=b, "");
+            }
+        }
+    }
+    let linky = ["--", "==", "-.", "~~~"]
+        .iter()
+        .any(|t| unquoted.contains(t));
+    let Some(w) = flow_words(line) else {
+        return false;
+    };
+    let target = |t: &str| matches!(t, "_self" | "_blank" | "_parent" | "_top");
+    let quoted = |t: &str| t.len() >= 2 && t.starts_with('"') && t.ends_with('"');
+    match head {
+        "flowchart" | "graph" => true,
+        "end" => w.len() == 1,
+        "direction" => w.len() == 2 && matches!(w[1], "TB" | "TD" | "BT" | "RL" | "LR"),
+        "class" => !linky && w.len() == 3,
+        "click" => {
+            if linky || w.len() < 3 {
+                return false;
+            }
+            // click ID (href URL | URL | call f(..) | callback) ["tip"] [target]
+            let rest = &w[2..];
+            let (rest, url_like) = match rest {
+                ["href", url, r @ ..] if quoted(url) => (r, true),
+                ["call", f, r @ ..] if f.contains('(') => (r, false),
+                [url, r @ ..] if quoted(url) => (r, true),
+                [cb, r @ ..] if !cb.starts_with('"') => (r, false),
+                _ => return false,
+            };
+            match rest {
+                [] => true,
+                [tip] => quoted(tip) || (url_like && target(tip)),
+                [tip, t] => quoted(tip) && url_like && target(t),
+                _ => false,
+            }
+        }
+        // classDef / style / linkStyle / subgraph carry free-form text
+        _ => !linky,
+    }
+}
+
 /// the id a `subgraph` line declares: `subgraph s1 [Title]` -> `s1`, and
 /// `subgraph "s 2"` -> `s 2` (mermaid unquotes it, so a bare `s2` line
 /// names it, review #3h, 1)
@@ -1098,6 +1179,18 @@ fn graph_raster(
             .filter(|l| l.split_whitespace().next() == Some("subgraph"))
             .map(flow_subgraph_id)
             .collect();
+        // mermaid MERGES two `subgraph s1` blocks into one cluster (first
+        // title wins); the crate draws two frames (review #3i, 1)
+        if declared
+            .iter()
+            .enumerate()
+            .any(|(i, d)| declared[..i].contains(d))
+        {
+            return Err(gate("a subgraph declared twice", false));
+        }
+        // per open subgraph: has it any member yet? mermaid draws an EMPTY
+        // subgraph as a box, the crate drops it (review #3i, 2)
+        let mut filled: Vec<bool> = Vec::new();
         for (no, raw) in ls.iter().enumerate() {
             if !stmt(no, raw) {
                 continue;
@@ -1117,16 +1210,26 @@ fn graph_raster(
             }
             // subgraph nesting: an edge landing on a subgraph INSIDE another
             // subgraph routes to strokes no element owns (review #3f, 6)
+            if SKIP.contains(&head) && !flow_keyword_line_ok(head, line) {
+                return Err(gate("a keyword line with words mermaid rejects", false));
+            }
             if head == "subgraph" {
                 let id = flow_subgraph_id(line);
                 if !open.is_empty() {
                     nested.push(id);
                 }
+                if let Some(f) = filled.last_mut() {
+                    *f = true;
+                }
                 open.push(id);
+                filled.push(false);
                 continue;
             }
             if head == "end" {
                 open.pop();
+                if filled.pop() == Some(false) {
+                    return Err(gate("an empty subgraph mermaid draws as a box", false));
+                }
                 continue;
             }
             if head == "style" {
@@ -1151,6 +1254,9 @@ fn graph_raster(
             // (review #3g, 1)
             if !open.is_empty() && line_ids.iter().any(|i| declared.contains(i)) {
                 return Err(gate("a subgraph nested by membership", true));
+            }
+            if let Some(f) = filled.last_mut() {
+                *f = true;
             }
             ids.append(&mut line_ids);
             pairs.extend(line_pairs);

@@ -354,7 +354,14 @@ The layout does not depend on width; only rasterization does. Memoize
   a quoted subgraph id counts unquoted, since `s2` names `"s2"` (#3h,
   1); and keywords match in mermaid's exact case only — `Click --> C`
   is a node there, a click line to the crate, so a keyword written in
-  another case refuses (#3h, 2); and two edges between the same
+  another case refuses (#3h, 2); a subgraph id declared twice (mermaid
+  merges the blocks, first title wins) and an EMPTY subgraph (mermaid
+  draws it as a box) refuse (#3i, 1/2); and since the crate skips
+  keyword lines whole, each must leave nothing mermaid would reject —
+  no link token on `class`/`click`/`style`/`classDef`/`linkStyle`/
+  `subgraph` lines, `class <ids> <name>` exactly, `click` within its
+  href/call/callback grammar, `direction` with one known value, `end`
+  alone (#3i, 3); and two edges between the same
   pair of boxes must each keep cells of their own outside the boxes,
   or the raster has drawn two edges as one arrow (#3f, 1) — nor may
   they share one arrowhead. Every visible box must also SAY what the
