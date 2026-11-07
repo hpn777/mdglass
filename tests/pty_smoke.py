@@ -115,6 +115,14 @@ out, _ = run_pty(["--no-diagrams", mmd], [b"q"])
 check("--no-diagrams starts on source", "graph" in visible(out) and "►" not in visible(out))
 piped = subprocess.run([MDGLASS, os.path.join(tmp, "m.md")], capture_output=True).stdout
 check("piped mermaid stays escape-free grep-able source", b"graph LR" in piped and b"\x1b" not in piped, piped[:60])
+# a capped 40-node/60-edge diagram costs seconds of layout the pager must
+# keep off its own thread: keys and quit stay instant while the worker grinds
+big = ["graph TD"] + [f"  n{i}[node {i} padded label] --> n{(i + 1) % 40}" for i in range(40)]
+big += [f"  n{i} -->|edge label {i}| n{(i + 13) % 40}" for i in range(20)]
+bigdoc = doc("big.md", "```mermaid\n" + "\n".join(big) + "\n```\n")
+_, exited = run_pty([bigdoc], [b"j", b"q"], timeout=1.2)
+check("capped diagram never blocks keys or quit", exited)
+
 out, _ = run_pty([mmd], [b"/alpha", b"\r", b"q"])
 check("search highlights the node label inside the art", b"\x1b[7ma" in out)
 broken = doc("bad.md", "```mermaid\nnot a diagram\n```\n")

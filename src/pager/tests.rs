@@ -12,11 +12,19 @@ fn shown(p: &Pager) -> String {
     strip_ansi(&p.docs[0].lines.join("\n"))
 }
 
-/// Run the idle warm ticks the real loop performs between keys, so every
-/// pending diagram has been drawn (Pager::new deliberately never blocks on
+/// Replicate the run loop's idle ticks until every pending diagram has been
+/// drawn on a real worker thread (Pager::new deliberately never blocks on
 /// the engine: a first frame must appear instantly).
 fn warm(p: &mut Pager) {
-    while p.warm_one() {}
+    p.spawn_warm_worker();
+    let mut spins = 0;
+    while !p.warm_q.is_empty() || !p.inflight.is_empty() {
+        p.warm_tick();
+        spins += 1;
+        assert!(spins < 30_000, "warm queue does not converge: q={:?} inflight={:?}", p.warm_q, p.inflight);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    p.warm_tick(); // pull a result that landed between the last checks
 }
 
 fn pager_diag(docs: &[&str], height: usize, diagrams: bool) -> Pager {
@@ -158,7 +166,8 @@ fn d_toggle_swaps_mermaid_art_and_source() {
     // on: box art with its labels, source gone (after the idle warm ticks)
     let mut p = pager_diag(&[doc], 24, true);
     assert!(shown(&p).contains("graph"), "first frame blocked on the engine");
-    assert!(p.warm_one(), "fence was not queued for warming");
+    assert!(!p.warm_q.is_empty(), "fence was not queued for warming");
+    warm(&mut p);
     let all = shown(&p);
     assert!(all.contains('►') && all.contains("alpha") && all.contains("omega"), "no art:\n{all}");
     assert!(!all.contains("graph"), "source leaked beside the art");
@@ -192,11 +201,7 @@ fn quoted_fences_warm_at_their_narrower_width() {
     assert_eq!(p.warm_q.len(), 1, "quoted fence not queued");
     // the queue keys on the width render() will use: quotes narrow by two
     assert_eq!(p.warm_q[0].1, 58, "quote width not mirrored");
-    let mut spins = 0;
-    while p.warm_one() {
-        spins += 1;
-        assert!(spins < 8, "warm queue does not converge: {:?}", p.warm_q);
-    }
+    warm(&mut p);
     assert!(p.warm_q.is_empty(), "queue left armed after warm: {:?}", p.warm_q);
     assert!(shown(&p).contains('\u{25ba}'), "quoted diagram never drawn");
     // the same thread just drew this source at both widths: a fresh pager

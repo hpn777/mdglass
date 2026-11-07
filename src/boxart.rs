@@ -57,11 +57,23 @@ const V_COMPACT: usize = 1; // too wide for the window
 const V_ROOMY: usize = 2; // geometry too tight to draw honestly at cell scale
 const V_COUNT: usize = 3;
 
-/// one engine call per (source, variant) slot; slots are tried at most twice
-/// per render (a fit check is free, the engine is not)
+/// the pager hands layouts to a worker thread and back; if upstream ever
+/// puts interior mutability in these types that must break here, not there
+const _: fn() = || {
+    fn require_send<T: Send>() {}
+    require_send::<Layout>();
+};
+
+/// one engine call per (source, variant) slot; a render consults at most
+/// two slots (default, plus compact or roomy; a fit check is free, the
+/// engine is not)
 struct Entry {
     tried: [bool; V_COUNT],
     got: [Option<Rc<Layout>>; V_COUNT],
+    /// generation of the last use; overflow evicts stale entries only, so
+    /// a full cache can never cycle: dropping an entry the current view
+    /// still draws would re-arm its fence and evict the replacement in turn
+    gen: u64,
 }
 
 impl Default for Entry {
@@ -69,6 +81,7 @@ impl Default for Entry {
         Entry {
             tried: [false; V_COUNT],
             got: [None, None, None],
+            gen: 0,
         }
     }
 }
@@ -82,6 +95,8 @@ thread_local! {
     static LAYOUTS: RefCell<HashMap<String, Entry>> = RefCell::new(HashMap::new());
     /// set while the engine runs: the global panic hook keeps quiet
     static QUIET: Cell<bool> = const { Cell::new(false) };
+    /// bumped by the pager on every rerender; see Entry.gen
+    static GEN: Cell<u64> = const { Cell::new(1) };
 }
 
 /// ASCII/Unicode box art for a mermaid flowchart, or `None` to keep the code
@@ -106,6 +121,28 @@ pub(crate) enum Outcome {
 
 pub(crate) fn probe(text: &str, max_cols: usize, plain: bool) -> Outcome {
     decide(text, max_cols, plain, &mut |v| peek_layout(text, v))
+}
+
+/// the variant a `terminal_ascii` run would have to compute next for this
+/// fence (None when the cache already decides it): the probe ladder records
+/// the first variant its getter could not answer, so dispatch follows the
+/// exact same path the real run takes - never a re-derived copy of it
+pub(crate) fn next_warm(text: &str, max_cols: usize, plain: bool) -> Option<usize> {
+    let mut need: Option<usize> = None;
+    let outcome = decide(text, max_cols, plain, &mut |v| {
+        let hit = peek_layout(text, v);
+        if hit.is_none() {
+            need.get_or_insert(v);
+        }
+        hit
+    });
+    match outcome {
+        Outcome::Unknown => {
+            debug_assert!(need.is_some(), "Unknown must name a variant");
+            need
+        }
+        _ => None,
+    }
 }
 
 /// The spacing ladder shared by the full path and the probe, so the probe's
@@ -166,10 +203,18 @@ enum Pick {
 /// cache-only layout lookup: None = this variant was never tried
 fn peek_layout(text: &str, variant: usize) -> Option<Option<Rc<Layout>>> {
     LAYOUTS.with(|c| {
-        c.borrow()
-            .get(text)
+        let mut c = c.borrow_mut();
+        let hit = c
+            .get_mut(text)
             .filter(|e| e.tried[variant])
-            .map(|e| e.got[variant].clone())
+            .map(|e| (e.got[variant].clone(), e.gen));
+        if let Some((got, _)) = hit {
+            if let Some(e) = c.get_mut(text) {
+                e.gen = GEN.with(|g| g.get()); // probing is using it
+            }
+            return Some(got);
+        }
+        None
     })
 }
 
@@ -196,26 +241,53 @@ fn cached_layout(text: &str, variant: usize) -> Option<Rc<Layout>> {
     if let Some(decided) = peek_layout(text, variant) {
         return decided;
     }
-    let built = engine(text, variant).map(Rc::new);
+    let built = engine(text, variant);
+    insert_layout(text, variant, built);
+    LAYOUTS.with(|c| c.borrow().get(text).and_then(|e| e.got[variant].clone()))
+}
+
+/// record a decided layout (worker results arrive here on the UI thread);
+/// the layout is Send plain data, wrapped in Rc only after the move
+pub(crate) fn insert_layout(text: &str, variant: usize, built: Option<Layout>) {
+    let gen = GEN.with(|g| g.get());
     LAYOUTS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > CACHE_MAX {
-            // crude bound, and the layouts are tens of MB even at the cap;
-            // the pager's warm queue plus every width it has been drawn at
-            // must survive, or each resize re-runs the whole engine
-            c.clear();
+            let stale: Vec<String> =
+                c.iter().filter(|(_, e)| e.gen != gen).map(|(k, _)| k.clone()).collect();
+            for k in stale {
+                c.remove(&k);
+            }
+            if c.len() > CACHE_MAX {
+                c.clear(); // one live view beyond the cap: nothing is stale
+            }
         }
         let e = c.entry(text.to_string()).or_default();
         e.tried[variant] = true;
-        e.got[variant] = built.clone();
+        e.got[variant] = built.map(Rc::new);
+        e.gen = gen;
     });
-    built
+}
+
+/// the fence set changed: everything used from now on stamps this generation
+pub(crate) fn new_generation() {
+    GEN.with(|g| g.set(g.get() + 1));
+}
+
+/// keep an entry the current view still draws alive through eviction
+pub(crate) fn keep(text: &str) {
+    LAYOUTS.with(|c| {
+        if let Some(e) = c.borrow_mut().get_mut(text) {
+            e.gen = GEN.with(|g| g.get());
+        }
+    });
 }
 
 /// parse + layout under the panic discipline. Only flowcharts that come back
 /// as graph data are eligible; everything else (sequence, pie, ...) stays
-/// source until P3.
-fn engine(text: &str, variant: usize) -> Option<Layout> {
+/// source until P3. `pub(crate)` for the pager's worker thread; it touches
+/// no cache, so the two threads cannot race it.
+pub(crate) fn engine(text: &str, variant: usize) -> Option<Layout> {
     with_quiet_panic(|| {
         let parsed = parse_mermaid_strict(text).ok()?; // preflight validator inside
         if !matches!(parsed.graph.kind, DiagramKind::Flowchart) {

@@ -4,8 +4,9 @@
 // bytes between it and the terminal, so the logic is testable without a TTY.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::io::{self, Read, Write};
-use std::thread::sleep;
+use std::thread::{self, sleep};
 use std::time::Duration;
 
 use termion::event::{parse_event, Event, Key};
@@ -14,6 +15,7 @@ use termion::{async_stdin, AsyncReader};
 
 use crate::ansi::{map_visible, pad_to, sg, strip_ansi, truncate_to, visible_width, wrap, RESET};
 use crate::boxart::{self, Outcome};
+use mermaid_rs_renderer::layout::Layout;
 use crate::render::{parse, render, Cfg, Line};
 
 /// Decode raw terminal input. termion reports a bare ESC as a parse error, so
@@ -88,9 +90,18 @@ pub struct Pager {
     urls: bool,
     diagrams: bool,
     /// mermaid fences the cache cannot answer yet: (source, the width they
-    /// were probed at). One is computed per idle tick, so opening a doc or
-    /// pressing D never blocks the screen on the layout engine.
+    /// were probed at), current file first, nearest the viewport first.
+    /// Dispatch hands one variant per idle tick to `job_tx`; opening a doc
+    /// or pressing D never blocks the screen on the layout engine.
     warm_q: VecDeque<(String, usize)>,
+    /// worker-thread plumbing: (source, variant) jobs out, decided layouts
+    /// back; None when the thread could not be spawned (then art simply
+    /// never warms and every fence honestly stays source)
+    job_tx: Option<Sender<(String, usize)>>,
+    result_rx: Receiver<(String, usize, Option<Layout>)>,
+    /// jobs handed to the worker but not returned, so the same layout is
+    /// never computed twice while it is in flight
+    inflight: HashSet<(String, usize)>,
     width: usize,
     height: usize,
     needle: String,
@@ -126,6 +137,9 @@ impl Pager {
             urls,
             diagrams,
             warm_q: VecDeque::new(),
+            job_tx: None,
+            result_rx: mpsc::channel().1,
+            inflight: HashSet::new(),
             width: 0,
             height: 0,
             needle: String::new(),
@@ -155,8 +169,16 @@ impl Pager {
             // keep the reading place across the toggle: anchor on the first
             // findable row of the old view and re-find the nearest copy of
             // it in the new rows (art and source shift everything below)
-            let anchor = (d.top..(d.top + 3).min(d.plain.len()))
-                .find(|&i| d.plain[i].trim().len() >= 2)
+            // prefer a row whose text is unique in the old view: fence
+            // chrome repeats per diagram, and the nearest copy of a repeated
+            // anchor could be a neighbouring fence
+            let candidate = |i: usize| d.plain[i].trim().len() >= 2;
+            let unique = |i: usize| d.plain.iter().filter(|l| **l == d.plain[i]).count() == 1;
+            let range = d.top..(d.top + 3).min(d.plain.len());
+            let anchor = range
+                .clone()
+                .find(|&i| candidate(i) && unique(i))
+                .or_else(|| range.clone().find(|&i| candidate(i)))
                 .map(|i| (d.plain[i].clone(), i, d.top));
             // render() wraps to `width`; wrap() again only guards rows that cannot shrink
             d.lines = render(&d.content, &cfg).iter().flat_map(|l| wrap(l, self.width)).collect();
@@ -188,9 +210,9 @@ impl Pager {
     /// Re-arm every fence a probe could not decide at the width it will be
     /// drawn at. (src, cols) rather than src alone: a fence inside a quote
     /// renders two columns narrower and its decision is width-specific;
-    /// warming with the same cols as the probe makes the queue converge
-    /// after exactly one pass.
+    /// warming what this probe asks makes the queue converge.
     fn rebuild_warm_q(&mut self) {
+        boxart::new_generation(); // eviction may now drop anything unreferenced
         self.warm_q.clear();
         if !self.diagrams {
             return;
@@ -198,29 +220,106 @@ impl Pager {
         let plain = !self.color;
         let cfg = Cfg { diagrams: true, ..Cfg::new(self.color, self.width, self.urls) };
         let mut seen: HashSet<(String, usize)> = HashSet::new();
-        for d in self.docs.iter() {
+        let mut armed: Vec<(i64, usize, (String, usize))> = Vec::new(); // (distance, order, key)
+        let n = self.docs.len().max(1);
+        // the file under read comes first: a multi-second diagram in a file
+        // nobody is looking at must not delay the one under the eyes
+        for k in 0..n {
+            let d = &self.docs[(self.file + k) % n];
             let mut fences = Vec::new();
             mermaid_fences(&parse(&d.content, &cfg), self.width, &mut fences);
-            for key in fences {
-                let (src, cols) = (&key.0, key.1);
+            let src_lines = d.content.lines().count().max(1);
+            let frac_top = if d.lines.is_empty() { 0.0 } else { d.top as f64 / d.lines.len() as f64 };
+            for (i, key) in fences.into_iter().enumerate() {
+                boxart::keep(&key.0); // drawn or waiting: still referenced
                 if !seen.insert(key.clone()) {
                     continue; // same fence at the same width: decided once
                 }
-                if matches!(boxart::probe(src, cols, plain), Outcome::Unknown) {
-                    self.warm_q.push_back(key);
+                if !matches!(boxart::probe(&key.0, key.1, plain), Outcome::Unknown) {
+                    continue;
                 }
+                // rough viewport priority: source line order and rendered
+                // row order grow together, so source fraction orders like a row
+                let pos = d.content.find(&key.0).unwrap_or(0);
+                let line = d.content[..pos].bytes().filter(|b| *b == b'\n').count();
+                let dist = ((line as f64 / src_lines as f64 - frac_top).abs() * 1000.0) as i64;
+                armed.push((dist, i, key));
             }
+        }
+        armed.sort_by_key(|(dist, order, _)| (*dist, *order));
+        self.warm_q.extend(armed.into_iter().map(|(_, _, key)| key));
+    }
+
+    /// One worker for the whole session: the layout engine runs only on
+    /// that thread (a capped diagram measures 1.7-4.7 s and cannot be
+    /// aborted), so input is never behind a computation and `q` is always
+    /// instant. Quitting does not join: process exit reaps the thread.
+    pub(crate) fn spawn_warm_worker(&mut self) {
+        let (job_tx, job_rx) = mpsc::channel::<(String, usize)>();
+        let (done_tx, done_rx) = mpsc::channel::<(String, usize, Option<Layout>)>();
+        // worker threads default to 2 MB stacks against the main thread's
+        // 8; the recursive-descent parser needs the headroom - a stack
+        // overflow would abort the whole process, not just lose a diagram
+        let spawned = thread::Builder::new()
+            .name("mdglass-warm".into())
+            .stack_size(64 << 20)
+            .spawn(move || {
+                for (text, variant) in job_rx.iter() {
+                    let built = boxart::engine(&text, variant); // catches its own panics
+                    if done_tx.send((text, variant, built)).is_err() {
+                        break; // pager gone; process exit is imminent
+                    }
+                }
+            })
+            .is_ok();
+        if spawned {
+            self.job_tx = Some(job_tx);
+            self.result_rx = done_rx;
         }
     }
 
-    /// Draw one pending diagram on an idle tick: engine time goes between
-    /// frames, never during one. Returns true when work happened, so the
-    /// caller repaints the (possibly) new art.
-    pub(crate) fn warm_one(&mut self) -> bool {
-        let Some((src, cols)) = self.warm_q.pop_front() else { return false };
-        boxart::terminal_ascii(&src, cols, !self.color); // fills the cache; refusals memoize
-        self.rerender();
-        true
+    /// One idle tick: finished layouts move into the cache and onto the
+    /// screen, then the next needed variant goes to the worker. Returns
+    /// true when content changed and the caller should repaint.
+    pub(crate) fn warm_tick(&mut self) -> bool {
+        let mut got = false;
+        while let Ok((src, variant, layout)) = self.result_rx.try_recv() {
+            self.inflight.remove(&(src.clone(), variant));
+            boxart::insert_layout(&src, variant, layout);
+            got = true;
+        }
+        if got && self.diagrams {
+            // re-probes answer further down the ladder now: some fences are
+            // decided, others still await a follow-up variant
+            self.rerender();
+        }
+        self.dispatch();
+        got
+    }
+
+    /// Hand the worker the next variant each queued fence waits on, one job
+    /// per tick. `next_warm` walks the very ladder `terminal_ascii` walks,
+    /// so a dispatch always answers what the probe asked (the queue
+    /// converges: every arrival marks one slot tried, shrinking the unknown
+    /// set by at least that fence's dependence on it).
+    fn dispatch(&mut self) {
+        let Some(tx) = self.job_tx.clone() else { return };
+        let plain = !self.color;
+        let mut turns = self.warm_q.len();
+        while turns > 0 {
+            turns -= 1;
+            let Some((src, cols)) = self.warm_q.pop_front() else { break };
+            match boxart::next_warm(&src, cols, plain) {
+                Some(variant) if self.inflight.insert((src.clone(), variant)) => {
+                    if tx.send((src, variant)).is_err() {
+                        self.job_tx = None; // worker lost: stay honestly on source
+                        return;
+                    }
+                    return; // one job per tick; arrivals wake the next
+                }
+                _ => self.warm_q.push_back((src, cols)), // in flight, or decided since queueing
+            }
+        }
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
@@ -466,6 +565,7 @@ impl Drop for AltScreen {
 pub fn run(files: &[(String, String)], color: bool, urls: bool, diagrams: bool) -> io::Result<()> {
     let (w, h) = termion::terminal_size().unwrap_or((80, 24));
     let mut pager = Pager::new(files, color, urls, diagrams, w as usize, h as usize);
+    pager.spawn_warm_worker(); // the only thread the layout engine runs on
     let mut out = io::stdout().into_raw_mode()?;
     out.write_all(b"\x1b[?1049h\x1b[?25l")?;
     let _screen = AltScreen;
@@ -494,9 +594,10 @@ pub fn run(files: &[(String, String)], color: bool, urls: bool, diagrams: bool) 
                         dirty = true;
                     }
                 }
-                // no key pending: this tick belongs to the next diagram,
-                // which pops in as soon as it is drawn
-                if pager.warm_one() {
+                // no key pending: receive finished layouts and queue the
+                // next job; the worker computes, this loop stays responsive
+                // (this also runs on ticks that resized)
+                if pager.warm_tick() {
                     dirty = true;
                 }
                 sleep(Duration::from_millis(15));
