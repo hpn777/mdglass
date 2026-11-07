@@ -224,58 +224,108 @@ The layout does not depend on width; only rasterization does. Memoize
 
 - One `raster()` dispatcher routes every admitted kind: Flowchart/State/Er
   share `graph_raster` (kind gates inside), Sequence gets `sequence_raster`,
-  Pie becomes `pie_list` — title plus `label  [value]  pct%` rows (the raw
-  value column keeps rounded shares honest; `showData` legends print as
-  mermaid shows them).
+  Pie becomes `pie_list` — title plus `label  [value]  pct%` rows, read
+  from each slice itself; the raw value column keeps rounded shares
+  honest and the list matches `showData` output for every pie.
 - State: `[*]` start/end pseudo-states draw as one dot (● start, ◉ end;
   plain `o`/`@`) — a 16 px circle has no honest box reading at cell scale.
   Their footprint is the single cell, which slides a small spiral outward
   until it is off every box, off every frame line, and a cell clear of any
-  box so the arrow into it has a head; the engine polyline endpoints are
-  re-aimed at the cell actually drawn. Composite anchors (`Running -->
+  box so the arrow into it has a head; if the dot's px centre sits inside
+  a composite the candidates stay inside that composite — sliding out
+  would move the membership the frame states (review #3 B7). The engine
+  polyline endpoints are re-aimed at the cell actually drawn. Composite anchors (`Running -->
   Working`) were hidden nodes *not* listed in their own subgraph's members;
   they now enter `anchors` via `anchor_subgraph`, so such edges terminate
   at the frame like the SVG.
 - Sequence: lanes map to columns, events claim rows top-down
-  (`claim_rows`, slide prefers down to preserve order — frames are claimed
-  before messages so an arrow can never erase a wall). Boxes and notes
-  don't claim rows (three head boxes legitimately share a band): they scan
-  for a band of cells that nothing EDGE/TEXT owns (`band_clear`). Frame
-  section labels snap to the *claimed* wall/divider row; a label and its
-  keyword share one pentagon ("opt [debug]") so same-line labels append.
+  Every drawn line claims through the px-aware `claim_row`: the row must
+  be free (no earlier line, no box row) *and* keep the same order against
+  every already-claimed line (a slide that crossed another event would
+  retell the sequence out of turn, review #3 B1); no row can un-fuse two
+  events that share a px height, so those refuse. A final gate re-reads
+  every drawn line against its px height and refuses unless rows kept the
+  source order — the belt to the claim's braces. Boxes and notes claim
+  whole rectangles (three head boxes may share a band when their columns
+  don't touch, but never a line row, another box, or a drawn cell). Wall
+  and divider cells are sacred: boxes, notes and floating labels may not
+  break a section open like a door the source never drew (B3/B8), though a
+  message row crossing a wall is a real crossing and stays. Frame labels
+  snap to the *claimed* wall/divider row, may punch their own wall between
+  the corners but never run over one — a wide section name needs a wide
+  frame (B2); keyword and section share one pentagon ("opt [debug]").
   Activation bars draw one column right of the lane (a 10 px bar has no
   honest reading ON the lane and overwriting `│` with `║` was rejected in
-  review), under messages so arrows cross it as the SVG draws them. Only
-  alt/opt/else frames, `Note over`, ActorBox actors; autonumber, boxes,
-  par/loop variants of frames, leftOf/rightOf notes, source-end arrowheads
-  and stick figures refuse whole.
+  review), under messages so arrows cross it as the SVG draws them; the
+  crate's activation boxes lag one message behind the SVG's own markers
+  and the art follows the layout, GUI identically. Alt/else/opt/loop
+  frames draw; two frames that overlap where neither strictly contains the
+  other (the crate stacks consecutive blocks' walls into one row) refuse
+  whole (B2). Only `Note over` draws — and only where a free band exists;
+  autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
+  notes, source-end arrowheads and stick figures refuse whole.
 - `emit` now glyph-converts only cells with a routing mask: the sequence
   raster draws finished glyphs (mask 0) and was silently flattening `┐ ┘ │
   ╌` to `─` — flowchart art is untouched (masked cells only, dumps verified
   byte-identical before and after).
 - ER: attribute separator `---` inside a box label draws as a full-width
-  rule; relations also print as a `Relationships:` list under the diagram
-  using the exact crow's-foot notation (`||--o{` etc.), mirrored per end,
-  because the notation cannot fit one cell per glyph. Self-relations refuse.
+  rule (flowchart and state nodes never take it — the rule flag is gated
+  on the ER kind); relations also print as a `Relationships:` list under
+  the diagram using the exact crow's-foot notation (`||--o{` etc.),
+  mirrored per end — the start side reads `}o`/`}|`, the reverse-and-swap
+  of the end side (review #3 B6) — because the notation cannot fit one
+  cell per glyph. Self-relations, empty relation lists (would draw boxes
+  the source never related) and entity names carrying the list's own
+  separators refuse.
 - Edge label placement learned to float: rows ±2 and columns ±4 from the
   anchor (SVG hangs labels loosely), preferring one column of air from
   neighbouring labels — falling back to touching rather than refusing.
-  Flowchart art is byte-identical under the wider search (dumps re-verified).
-- Costs at the caps (release, one full ladder ≤2 variants): big state
-  0.3 s, big sequence 0.06 s, big ER 1.0 s, pie 0.5 ms — all refusals at
-  the pathological end are cheaper (≤1.4 s worst observed). The flowchart
-  40n/60e budget (1.7–4.7 s per variant, worker-thread only) stays the
-  binding cap; no per-kind caps added.
+  Two review-#3 tightening passes: a label window may never cover a
+  subgraph frame wall cell (that opens a door the source never drew, B8a),
+  and the touching fallback may not fuse two ASCII words ("pausedispatch"
+  is not two labels; CJK contact stays legal, B8b). When every anchor
+  window is spoken for, the label floats beside the drawn route instead —
+  one step off the polyline still names its route, while a refusal drops
+  the whole diagram. Flowchart art is byte-identical under all of this
+  (dumps re-verified).
+- Costs, measured on fixtures that actually DRAW (the earlier scratch set
+  all refused and only ever measured the refusal path; rerun with
+  `cargo test -- --ignored measure_kind_caps`, which grows each kind until
+  it stops drawing): state LR-tree 37 nodes in 40 ms, flow chain 13 nodes
+  at 120 cols in 189 ms / 23 at 220 cols in 431 ms, ER star 9 entities at
+  120 cols in 148 ms, sequence 41 messages in 14 ms, pie 25 slices in
+  0.4 ms. The largest drawable sizes sit below the 40n/60e caps because
+  long chains lose stubs or window width first; the one-over-cap flow
+  refusal costs 5 ms. The flowchart budget (1.7–4.7 s per variant at the
+  caps, worker-thread only) stays the binding limit; no per-kind caps
+  added.
+- Sequence and pie carry a source-preflight gate because the parser
+  itself lies: the sequence parser hands EVERY accepted arrow token a
+  filled head (`A->B` would draw `►`), swaps the ends of `<-` tokens
+  (`A<->B` invents a participant named ">B") and silently drops whole
+  messages (`A->>B->>C`). `seq_source_messages` reruns the parser's exact
+  token scan on the source and refuses unless the drawn edges are exactly
+  the written filled one-way messages, in order and count; statement
+  types that draw nothing here (title, link, rect, autonumber) refuse
+  rather than vanish. Pie has the same shape of problem: slices sort by
+  value while the legend keeps source order (zipping pairs wrong names
+  with wrong numbers — each row reads its own slice's label/value), and
+  the renderer DROPS slices below ~1% share — so every written slice must
+  appear in the layout, by label and value, or the pie refuses (a
+  1-in-100000 pie draws no art, review #3 B5).
 - Honest known limits: `sequenceDiagram` layouts where the crate itself
-  overlaps elements (self-loop stubs hanging into notes or foot boxes —
-  `seq_dense` fixture) refuse exactly where no row band survives; a 40-slice
-  pie refuses (`pie data shape not understood`: legend/slices mismatch);
-  33-state graphs with back-jumps refuse at `two routes merge` like equally
-  dense flowcharts do. All fall back to the code block, GUI unaffected.
+  overlaps elements (consecutive frames sharing a wall row, self-loop
+  stubs fused into notes or foot boxes — `seq_dense` fixture) refuse
+  exactly where no claim survives; 26+-slice pies refuse (their thin
+  slices drop below the renderer's floor and the parity gate catches it);
+  33-state graphs with back-jumps refuse at `two routes merge` like
+  equally dense flowcharts do. All fall back to the code block, GUI
+  unaffected.
 - Upstream flake found while testing: bare `A<->B: z` without participant
   declarations parses into a phantom participant in *some* processes
-  (crate tokenizer + HashMap state); with declared participants it fails
-  strict parsing deterministically, so tests use the declared form.
+  (crate tokenizer + HashMap state). The source preflight makes this moot
+  for the art — `<-`-family tokens and odd tokenisations refuse before
+  the layout is trusted, whatever the parser made of them.
 
 ## Phases and gates
 

@@ -28,10 +28,10 @@ const ER_MMD: &str = "erDiagram\n CUSTOMER ||--o{ ORDER : places\n ORDER ||--|{ 
 const SEQ_DENSE_MMD: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n opt debug\n B->>B: log timing\n end\n Note over A,C: end-to-end trace\n";
 // the same battery, but the note sits between the blocks where the layout
 // gives it clear rows: lanes, activations, alt/else, opt, self loop, note
-const SEQ_MMD: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n Note over A,C: trace\n opt debug\n B->>B: log timing\n end\n B-->>A: 200 OK\n deactivate B\n";
+const SEQ_MMD: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n B->>C: COUNT\n opt debug\n C-->>B: n\n end\n B-->>A: 200 OK\n deactivate B\n";
 const SEQV1: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n activate C\n C-->>B: rows\n deactivate C\n B-->>A: 200 OK\n deactivate B\n";
 const SEQV2: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n C-->>B: rows\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n";
-const SEQV3: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n A->>B: ping\n opt debug\n B->>B: log timing\n end\n B-->>A: pong\n";
+const SEQV3: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: ping\n opt debug\n B->>C: log timing\n end\n B->>B: tick\n B-->>A: pong\n";
 const SEQV4: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n Note over A,C: trace\n B->>C: SELECT\n B-->>A: done\n";
 const PIE_MMD: &str = "pie showData title Browser share\n \"Chrome\" : 65.1\n \"Safari\" : 19.2\n \"Other\" : 15.7\n";
 const FAN_BACK: &str = "flowchart LR\n A[fetch] --> P[parse]\n B[read] --> P\n C[stdin] --> P\n P --> O1[json]\n P --> O2[table]\n P --> O3[html]\n O3 --> A";
@@ -329,8 +329,9 @@ fn phase3_kinds_render_art() {
                 "found",
                 "missing",
                 "debug",
-                "log timing",
-                "trace",
+                "COUNT",
+                "200 JSON",
+                "404",
                 "200 OK",
             ][..],
         ),
@@ -393,6 +394,193 @@ fn phase3_refusals_are_total() {
     refuse("pie\n \"a\" : 0\n \"b\" : 0", "zero total");
 }
 
+/// review #3 (B1): rounding at cell scale used to slide arrows past walls
+/// and merge rows, retelling the sequence out of order. Random dense
+/// sequences must now either refuse whole or draw every labelled message
+/// in source order - checked on the output the reader actually sees
+#[test]
+fn sequence_order_survives_cell_scale() {
+    // xorshift, no rand dependency: reproducible by construction
+    let mut seed = 0x5eed_2026_1107_u64;
+    let mut rng = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let mut drawn_cases = 0;
+    for case in 0..240 {
+        let n_p = 2 + (rng() % 3) as usize; // A, B, C, D
+        let mut src = String::from("sequenceDiagram\n");
+        for i in 0..n_p {
+            src.push_str(&format!(" participant {} as P{}\n", (b'A' + i as u8) as char, i));
+        }
+        let msgs = 4 + (rng() % 10) as usize;
+        let mut labels = Vec::new();
+        let mut i = 0;
+        while i < msgs {
+            let kind = rng() % 10;
+            if kind < 2 && i + 2 < msgs {
+                let kw = ["alt c", "opt d", "loop r"][(rng() % 3) as usize];
+                src.push_str(&format!(" {kw}\n"));
+                let inner = 1 + (rng() % 2) as usize;
+                for _ in 0..inner {
+                    if i >= msgs {
+                        break;
+                    }
+                    let (a, b) = (rng() % n_p as u64, rng() % n_p as u64);
+                    let arrow = if rng() % 3 == 0 { "-->>" } else { "->>" };
+                    let lbl = format!("m{i}");
+                    src.push_str(&format!(
+                        " {}{arrow}{}: {lbl}\n",
+                        (b'A' + a as u8) as char,
+                        (b'A' + b as u8) as char
+                    ));
+                    labels.push(lbl);
+                    i += 1;
+                }
+                if kw.starts_with("alt") {
+                    src.push_str(" else e\n");
+                    let (a, b) = (rng() % n_p as u64, rng() % n_p as u64);
+                    let lbl = format!("m{i}");
+                    src.push_str(&format!(
+                        " {}-->>{}: {lbl}\n",
+                        (b'A' + a as u8) as char,
+                        (b'A' + b as u8) as char
+                    ));
+                    labels.push(lbl);
+                    i += 1;
+                }
+                src.push_str(" end\n");
+            } else {
+                let (a, b) = (rng() % n_p as u64, rng() % n_p as u64);
+                let arrow = if rng() % 4 == 0 { "-->>" } else { "->>" };
+                let lbl = format!("m{i}");
+                src.push_str(&format!(
+                    " {}{arrow}{}: {lbl}\n",
+                    (b'A' + a as u8) as char,
+                    (b'A' + b as u8) as char
+                ));
+                labels.push(lbl);
+                i += 1;
+            }
+            if rng() % 6 == 0 {
+                src.push_str(&format!(" activate {}\n", (b'A' + (rng() % n_p as u64) as u8) as char));
+            }
+        }
+        let cols = 60 + (rng() % 90) as usize;
+        let Some(art) = terminal_ascii(&src, cols, false) else {
+            continue; // refusal is always allowed
+        };
+        check_invariants(&art, cols);
+        drawn_cases += 1;
+        // every message label must appear, and in the order the source
+        // told it: label rows strictly increasing with message index
+        let mut last = None;
+        for (k, lbl) in labels.iter().enumerate() {
+            let rows: Vec<usize> = art
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    r.split(|c: char| !c.is_alphanumeric())
+                        .any(|w| w == lbl)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "case {case} label {lbl} in {} rows:\n{}",
+                rows.len(),
+                art.join("\n")
+            );
+            if let Some(prev) = last {
+                assert!(
+                    rows[0] > prev,
+                    "case {case} message {k} (row {}) precedes its predecessor (row {prev}):\n{}",
+                    rows[0],
+                    art.join("\n")
+                );
+            }
+            last = Some(rows[0]);
+        }
+    }
+    assert!(drawn_cases >= 60, "fuzz drew {drawn_cases}, too few to prove anything");
+}
+
+#[test]
+fn parser_lies_refuse_at_the_source_gate() {
+    // review #3 (B4): the crate hands every accepted token a filled head
+    // and drops what it cannot tokenise; none of that may reach the art
+    let refuse = |src: &str| {
+        assert_eq!(terminal_ascii(src, 140, false), None, "should refuse: {src}");
+    };
+    refuse("sequenceDiagram\n A->B: open head");
+    refuse("sequenceDiagram\n A-->>B: solid\n A-->B: open head");
+    refuse("sequenceDiagram\n A->xB: crossed");
+    refuse("sequenceDiagram\n A->>B->>C: chained");
+    refuse("sequenceDiagram\n title Report\n A->>B: x");
+    refuse("sequenceDiagram\n A->>B: x\n link A: https://example.com");
+    refuse("sequenceDiagram\n A->>B: x\n rect rgb(200, 220, 250)\n B-->>A: y\n end");
+    // the same arrow, correctly written, still draws
+    assert!(
+        terminal_ascii("sequenceDiagram\n A->>B: fine\n B-->>A: back", 140, false).is_some()
+    );
+}
+
+#[test]
+fn pie_pairs_each_value_with_its_own_slice() {
+    // review #3 (B5): slices sort by value, the legend keeps source order;
+    // zipping the two pairs wrong names with wrong numbers
+    let art = terminal_ascii(
+        "pie showData\n \"Small\" : 1\n \"Big\" : 98\n \"Mid\" : 1\n",
+        80,
+        false,
+    )
+    .expect("pie fell back");
+    let all = art.join("\n");
+    assert!(all.contains("Big") && all.contains("98"), "missing Big\n{all}");
+    for line in &art {
+        if line.contains("Big") {
+            assert!(line.contains("98"), "Big lost its value: {line}");
+        }
+        if line.contains("Small") || line.contains("Mid") {
+            assert!(line.contains('1') && !line.contains("98"), "wrong value: {line}");
+        }
+    }
+    // a slice too thin for the renderer to keep is refused, never drawn
+    // as an absent category with a rounded-away percentage
+    assert_eq!(
+        terminal_ascii("pie\n \"Tiny\" : 1\n \"Huge\" : 99999\n", 80, false),
+        None,
+        "a dropped slice must not pass for the full pie"
+    );
+    // exactly 1% is the thinnest slice the renderer keeps, and it must
+    // show its share, not 0.0%
+    let art =
+        terminal_ascii("pie\n \"One\" : 10\n \"Big\" : 990\n", 80, false).expect("pie fell back");
+    let all = art.join("\n");
+    assert!(all.contains("1.0%"), "one-percent slice hidden:\n{all}");
+}
+
+#[test]
+fn er_relation_notation_mirrors_the_source() {
+    // review #3 (B6): the start side of a relation is the mirror of the
+    // end side; `{o` reads backwards and erDiagram's whole payload is
+    // these lines
+    let art = terminal_ascii(
+        "erDiagram\n CLASS }o--|| STUDENT : enrolls\n HOUSE |o--o{ PERSON : houses\n",
+        120,
+        false,
+    )
+    .expect("er fell back");
+    let all = art.join("\n");
+    assert!(all.contains("}o--||"), "start side not mirrored:\n{all}");
+    assert!(all.contains("|o--o{"), "start side not mirrored:\n{all}");
+    // a diagram whose relations parse to nothing must not draw lonely boxes
+    assert_eq!(terminal_ascii("erDiagram\n", 120, false), None);
+}
+
 #[test]
 fn probe_and_full_agree_for_every_kind() {
     for (src, cols) in [
@@ -417,22 +605,90 @@ fn probe_and_full_agree_for_every_kind() {
     }
 }
 
+
 #[test]
 #[ignore] // measure engine cost per kind at the node/edge caps
 fn measure_kind_caps() {
     use std::time::Instant;
-    for path in [
-        "/tmp/opencode/rv/big_state.mmd",
-        "/tmp/opencode/rv/big_seq.mmd",
-        "/tmp/opencode/rv/big_er.mmd",
-        "/tmp/opencode/rv/big_pie.mmd",
-    ] {
-        let src = std::fs::read_to_string(path).unwrap();
-        for cols in [120usize, 220] {
-            clear_cache();
-            let t = Instant::now();
-            let ok = terminal_ascii(&src, cols, false).is_some();
-            println!("CAP {:?} cols={cols} ok={ok} {:?}", path.rsplit('/').next().unwrap(), t.elapsed());
+    // the earlier scratch fixtures all refused, which only ever measured
+    // the refusal path; these are grown until they stop drawing, so the
+    // numbers describe real drawing cost and where the honest ceiling of
+    // the current rasters sits for each kind
+    let state = |n: usize| {
+        // LR binary tree: a plain chain stacks a single column so tall
+        // that the end dot loses its stub row; the tree stacks wide and
+        // stays drawable
+        let mut s = String::from("stateDiagram-v2\n direction LR\n [*] --> s0\n");
+        for i in 1..n {
+            s.push_str(&format!(" s{} --> s{i}\n", (i - 1) / 2));
+        }
+        s
+    };
+    let flow = |n: usize| {
+        let mut s = String::from("flowchart LR\n");
+        for i in 0..n - 1 {
+            s.push_str(&format!(" n{i}[N{i}] --> n{}[N{}]\n", i + 1, i + 1));
+        }
+        s
+    };
+    let er = |n: usize| {
+        // star, not chain: a long entity chain is wider than any sane
+        // window and refuses on width long before the node cap
+        let mut s = String::from("erDiagram\n");
+        for k in 0..n - 1 {
+            s.push_str(&format!(" ROOT ||--o{{ E{k} : r{k}\n", ));
+        }
+        s
+    };
+    let seq = |n: usize| {
+        let mut s = String::from("sequenceDiagram\n");
+        for c in "ABCD".chars() {
+            s.push_str(&format!(" participant {c} as {c}\n"));
+        }
+        for k in 0..n {
+            let a = (b'A' + (k % 3) as u8) as char;
+            let b = (b'A' + (k % 3) as u8 + 1) as char;
+            s.push_str(&format!(" {a}->>{b}: m{k}\n"));
+        }
+        s
+    };
+    let pie = |n: usize| {
+        let mut s = String::from("pie showData\n");
+        for k in 0..n {
+            s.push_str(&format!(" \"S{k}\" : {}\n", 4 * (n - k) + 12));
+        }
+        s
+    };
+    for cols in [120usize, 220] {
+        for (name, f) in [
+            ("state", &state as &dyn Fn(usize) -> String),
+            ("flow", &flow),
+            ("er", &er),
+            ("seq", &seq),
+            ("pie", &pie),
+        ] {
+            let mut last_ok = 0;
+            let mut last_t = std::time::Duration::ZERO;
+            let mut n = 4;
+            while n <= 41 {
+                clear_cache();
+                let src = f(n);
+                let t = Instant::now();
+                let ok = terminal_ascii(&src, cols, false).is_some();
+                if ok {
+                    last_ok = n;
+                    last_t = t.elapsed();
+                } else if n > 40 {
+                    break;
+                }
+                n += 1;
+            }
+            println!("CAP {name} cols={cols} largest_drew={last_ok} at {last_t:?}");
         }
     }
+    // the cap refusal itself stays cheap: one node over is a quick no
+    let over = flow(41);
+    let t = Instant::now();
+    assert!(!terminal_ascii(&over, 220, false).is_some());
+    println!("CAP flow41-over cols=220 refused {:?}", t.elapsed());
 }

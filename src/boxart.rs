@@ -179,11 +179,11 @@ fn decide(
         },
         Pick::Unknown => return Outcome::Unknown,
     };
-    match raster(&layout, width_cols(&layout), height_rows(&layout), plain) {
+    match raster(text, &layout, width_cols(&layout), height_rows(&layout), plain) {
         Ok(art) => Outcome::Art(art),
         // boxes/routes collided at cell scale: give dagre more room once
         Err(Fail::Retry) if tried_default => match pick(V_ROOMY) {
-            Pick::Draw(l) => match raster(&l, width_cols(&l), height_rows(&l), plain) {
+            Pick::Draw(l) => match raster(text, &l, width_cols(&l), height_rows(&l), plain) {
                 Ok(art) => Outcome::Art(art),
                 Err(_) => Outcome::Source,
             },
@@ -628,7 +628,13 @@ struct EdgeRec {
     to: usize,
 }
 
-fn raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Result<Vec<String>, Fail> {
+fn raster(
+    src: &str,
+    layout: &Layout,
+    cols: usize,
+    rows: usize,
+    plain: bool,
+) -> Result<Vec<String>, Fail> {
     // every kind enters through this one door: probe, next_warm and
     // terminal_ascii walk the same ladder for all of them, so no kind can
     // lie to the pager's cache probe about what a real run would draw
@@ -636,8 +642,8 @@ fn raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Result<Vec<
         DiagramKind::Flowchart | DiagramKind::State | DiagramKind::Er => {
             graph_raster(layout, cols, rows, plain)
         }
-        DiagramKind::Sequence => sequence_raster(layout, cols, rows, plain),
-        DiagramKind::Pie => pie_list(layout, cols),
+        DiagramKind::Sequence => sequence_raster(src, layout, cols, rows, plain),
+        DiagramKind::Pie => pie_list(src, layout, cols),
         _ => Err(gate("kind has no terminal art", false)),
     }
 }
@@ -677,6 +683,23 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
         })
     {
         return Err(gate("er relations need crow's-foot ends, no self-links", false));
+    }
+    if kind == DiagramKind::Er {
+        // the Relationships: list is one line per relation: an empty list
+        // would draw boxes the source never related, and a name carrying
+        // the line's own separators (space, colon) cannot be re-read
+        if layout.edges.is_empty() {
+            return Err(gate("erDiagram with no relations draws phantoms", false));
+        }
+        if layout.nodes.values().filter(|n| !n.hidden).any(|n| {
+            n.label
+                .lines
+                .first()
+                .map(|l| l.split_whitespace().count() > 1 || l.contains(':'))
+                .unwrap_or(true)
+        }) {
+            return Err(gate("an entity name the list cannot show", false));
+        }
     }
     let mut g = Grid::new(cols, rows);
     let cx = |x: f32| (x / SX).round() as i32;
@@ -725,6 +748,10 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
         // (an arrow into a dot that touches a wall has nowhere to put its
         // head); below comes first, matching how the SVG hangs end states
         let frame_lines: Vec<Rect> = layout.subgraphs.iter().filter_map(frame_rect).collect();
+        // if the dot's px centre sits inside a composite, the dot belongs
+        // to that composite: sliding it out of the frame would move the
+        // membership the frame states (review #3, B7)
+        let home_frame = frame_lines.iter().find(|f| f.has(r.x0, r.y0));
         let mut cands: Vec<(i32, i32, i32)> = Vec::new();
         for dx in -3i32..=3 {
             for dy in -3i32..=3 {
@@ -759,6 +786,9 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
                         && (f.y0..=f.y1).contains(&cand.y0))
             });
             if on_frame {
+                continue;
+            }
+            if home_frame.is_some_and(|f| !f.has(cand.x0, cand.y0)) {
                 continue;
             }
             *r = cand;
@@ -886,6 +916,17 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
             .then_some((r.x0, r.y0))
         })
         .collect();
+    // the wall ring of a box is one cell thick: a staircase rounding may
+    // graze it (and the invisible cell behind it, NODE out-ranks EDGE), but
+    // a route cell inside the ring is a spur the source never drew
+    let end_strict = |t: usize, x: i32, y: i32| -> bool {
+        if t < nodes.len() {
+            nodes[t].1.x0 < x && x < nodes[t].1.x1 && nodes[t].1.y0 < y && y < nodes[t].1.y1
+        } else {
+            let f = &frames[anchors[t - nodes.len()].1];
+            f.x0 < x && x < f.x1 && f.y0 < y && y < f.y1
+        }
+    };
     let end_has = |t: usize, x: i32, y: i32| -> bool {
         if t < nodes.len() {
             nodes[t].1.has(x, y)
@@ -947,6 +988,33 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
             // (endpoint cells survive anyway: nodes paint over them)
             if node_at(x, y).is_some() && !end_has(from, x, y) && !end_has(to, x, y) {
                 return Err(gate("edge routed through a foreign box", true));
+            }
+        }
+        // a route may leave its source box once and enter its target box
+        // once: the staircase clipping back through either endpoint draws
+        // a spur that exists in no source (review #3, B9)
+        let mut left_end = false;
+        for &(x, y) in &cells {
+            let mine = end_has(from, x, y) || end_has(to, x, y);
+            if !mine {
+                left_end = true;
+            } else if left_end && end_strict(from, x, y) && from != to {
+                return Err(gate("route bounces back into its source box", true));
+            }
+        }
+        let mut reentries = 0;
+        let mut prev_in_to = false;
+        if from != to {
+            // (a self route starts and ends on one box: there it is normal)
+            for &(x, y) in &cells {
+                let in_to = end_strict(to, x, y);
+                if in_to && !prev_in_to {
+                    reentries += 1;
+                }
+                prev_in_to = in_to;
+            }
+            if reentries > 1 {
+                return Err(gate("route bounces back into its target box", true));
             }
         }
         // frame riders: the route runs along a frame line (rounding fused
@@ -1117,7 +1185,7 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
     // 4. edge labels: centered on the engine's anchor; the window may cover
     // empty cells or this edge's own line, nothing else (a label sitting on
     // a stranger's line belongs to it visually); one row up/down is allowed
-    for e in &layout.edges {
+    for (ei, e) in layout.edges.iter().enumerate() {
         let lb = match &e.label {
             Some(lb) if lb.lines.iter().any(|l| !l.trim().is_empty()) => lb,
             _ => continue,
@@ -1126,48 +1194,99 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
             return Err(gate("edge label has control or zero-width characters", false));
         }
         let (ax, ay) = e.label_anchor.ok_or_else(|| gate("edge label without an anchor", false))?;
-        let own = layout
-            .edges
-            .iter()
-            .position(|x| std::ptr::eq(x, e))
-            .unwrap_or(0) as i16;
+        let own = ei as i16;
         let w = lb.lines.iter().map(|l| visible_width(l)).max().unwrap_or(0);
-        let mut placed_ok = false;
-        // the SVG label hangs loosely near its line's anchor: a few rows up
-        // or down all still read as belonging to it; more than that would
-        // name a different line, so the search stops at two. A gap from
-        // neighbouring labels comes first; sharing a border with a word
-        // is ugly, refusing the diagram is worse
-        'row: for (require_gap, dy) in [true, false]
+        // a candidate window is free when nothing drawn is covered and
+        // the border columns keep their air: two labels touching read as
+        // one word ("pausedispatch" is not two labels). Frame walls are
+        // never a backdrop: a label eating a wall cell breaks the wall
+        // open like a door the source never drew (B8a); ASCII words may
+        // not touch either way (B8b), CJK contact is fine as a fallback
+        let clear_at = |x: i32, y: i32, require_gap: bool| -> bool {
+            if !(g.inside(x, y) && g.inside(x + w as i32 - 1, y + lb.lines.len() as i32 - 1)) {
+                return false;
+            }
+            for r in 0..lb.lines.len() as i32 {
+                for xx in x - 1..=x + w as i32 {
+                    let Some(c) = g.get(xx, y + r) else {
+                        return false;
+                    };
+                    if xx == x - 1 || xx == x + w as i32 {
+                        if c.owner == TEXT {
+                            let ours = if xx == x - 1 {
+                                lb.lines[r as usize].trim_start().chars().next()
+                            } else {
+                                lb.lines[r as usize].trim_end().chars().next_back()
+                            };
+                            let fuses = c.ch.is_ascii_alphanumeric()
+                                && ours.is_some_and(|o| o.is_ascii_alphanumeric());
+                            if require_gap || fuses {
+                                return false;
+                            }
+                        }
+                        continue;
+                    }
+                    if c.owner != EMPTY
+                        && (c.owner > EDGE || (c.owner == EDGE && c.edge != own))
+                    {
+                        return false;
+                    }
+                }
+            }
+            true
+        };
+        let mut spot = None;
+        // the SVG label hangs loosely near its line's anchor: a few rows
+        // up or down all still read as belonging to it; more than that
+        // would name a different line, so the search stops at two. A gap
+        // from neighbouring labels comes first; sharing a border with a
+        // word is ugly, refusing the diagram is worse
+        'anchor: for (require_gap, dy) in [true, false]
             .into_iter()
             .flat_map(|gap| [0i32, -1, 1, -2, 2].map(move |dy| (gap, dy)))
         {
             // SVG hangs labels beside their line, not dead centre; when
             // the centre sits on a foreign vertical, drift sideways
-            'cell: for dx in [0i32, -1, 1, -2, 2, -3, 3, -4, 4] {
-            let y = cy(ay) + dy - (lb.lines.len() as i32 - 1) / 2;
-            let x = cx(ax) + dx - w as i32 / 2;
-            if !(g.inside(x, y) && g.inside(x + w as i32 - 1, y + lb.lines.len() as i32 - 1)) {
-                continue 'cell;
+            for dx in [0i32, -1, 1, -2, 2, -3, 3, -4, 4] {
+                let y = cy(ay) + dy - (lb.lines.len() as i32 - 1) / 2;
+                let x = cx(ax) + dx - w as i32 / 2;
+                if clear_at(x, y, require_gap) {
+                    spot = Some((x, y));
+                    break 'anchor;
+                }
             }
-            for r in 0..lb.lines.len() as i32 {
-                for xx in x - 1..=x + w as i32 {
-                    // one column of air on each side: two labels touching
-                    // read as one word ("pausedispatch" is not two labels)
-                    let Some(c) = g.get(xx, y + r) else {
-                        continue 'cell;
-                    };
-                    if xx == x - 1 || xx == x + w as i32 {
-                        if c.owner == TEXT && require_gap {
-                            continue 'cell;
-                        }
-                        continue;
-                    }
-                    if c.owner > EDGE || (c.owner == EDGE && c.edge != own) {
-                        continue 'cell;
+        }
+        if spot.is_none() {
+            // last resort: float beside the drawn route. The SVG anchor
+            // can round inside a composite's boxes while the line runs
+            // free outside; one step off the polyline still names this
+            // route and no other, while a refusal drops the whole diagram
+            let (axc, ayc) = (cx(ax), cy(ay));
+            let mut spots: Vec<(i32, i32, i32)> = Vec::new();
+            for &(rx, ry) in &drawn[ei].cells {
+                for dy in [-1i32, 0, 1] {
+                    // window by its left edge: a label may end beside the
+                    // route, not only centre on it (own route cells are
+                    // legal backdrop, the SVG label punches its own line)
+                    for dx in -(w as i32)..=3 {
+                        let (x, y) = (rx + dx, ry + dy);
+                        let d = (x + w as i32 / 2 - axc).abs() + (y - ayc).abs();
+                        spots.push((d, x, y));
                     }
                 }
             }
+            spots.sort_unstable();
+            spots.dedup_by(|a, b| a.1 == b.1 && a.2 == b.2);
+            'route: for require_gap in [true, false] {
+                for &(_, x, y) in &spots {
+                    if clear_at(x, y, require_gap) {
+                        spot = Some((x, y));
+                        break 'route;
+                    }
+                }
+            }
+        }
+        if let Some((x, y)) = spot {
             for (i, line) in lb.lines.iter().enumerate() {
                 let pad = (w - visible_width(line)) as i32 / 2;
                 g.text(x + pad, y + i as i32, line, TEXT);
@@ -1175,12 +1294,7 @@ fn graph_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Resul
                     placed.push((x + pad, y + i as i32, line));
                 }
             }
-            placed_ok = true;
-            break 'row;
-            }
-        }
-        if !placed_ok {
-
+        } else {
             return Err(gate("no free row for an edge label", true));
         }
     }
@@ -1239,7 +1353,8 @@ fn er_card(dec: Option<EdgeDecoration>, start: bool) -> &'static str {
         Some(EdgeDecoration::CrowsFootOne) => "||",
         Some(EdgeDecoration::CrowsFootZeroOne) => if start { "|o" } else { "o|" },
         Some(EdgeDecoration::CrowsFootMany) => if start { "}|" } else { "|{" },
-        Some(EdgeDecoration::CrowsFootZeroMany) => if start { "{o" } else { "o{" },
+        // the start side mirrors the end side: reverse and swap brace dirs
+        Some(EdgeDecoration::CrowsFootZeroMany) => if start { "}o" } else { "o{" },
         _ => "-", // undecorated link: the line alone carries it
     }
 }
@@ -1522,20 +1637,33 @@ fn emit(mut g: Grid, plain: bool) -> Result<Vec<String>, Fail> {
 /// sliding up or down by at most two rows, and only where every row in the
 /// band is still unclaimed. Two events sharing one row would read as one
 /// event; sliding is honest, silent merging is not.
-fn claim_rows(want: i32, n: i32, used: &mut HashSet<i32>, rows: usize) -> Option<i32> {
-    // slide order prefers DOWN: sequence flows top-down, so moving a
-    // crowder's row downward keeps events in their source order, while an
-    // upward slide can invert containment (a frame top above the previous
-    // frame's bottom)
-    for off in [0, 1, 2, -1] {
+/// A line's row: unclaimed, free of boxes, and positioned so it stays in
+/// the same order as every already-claimed line - a slide that crossed
+/// another event would retell the story out of turn (review #3, B1).
+/// Slide order prefers DOWN (sequence flows top-down); an equal px means
+/// the crate fused two events at one height, which no honest ASCII
+/// reading can un-fuse, so no row is offered at all.
+fn claim_row(
+    want: i32,
+    px: f32,
+    used: &mut HashSet<i32>,
+    rows: usize,
+    boxes: &[Rect],
+    lines_px: &[(f32, i32)],
+) -> Option<i32> {
+    for off in [0, 1, 2, -1, -2] {
         let r = want + off;
-        if r < 0 || r + n > rows as i32 {
+        if r < 0 || r >= rows as i32 {
             continue;
         }
-        if (r..r + n).all(|y| !used.contains(&y)) {
-            for y in r..r + n {
-                used.insert(y);
-            }
+        if used.contains(&r) || boxes.iter().any(|b| (b.y0..=b.y1).contains(&r)) {
+            continue;
+        }
+        let ordered = lines_px
+            .iter()
+            .all(|&(p, rr)| (px < p && r <= rr) || (px > p && r >= rr));
+        if ordered {
+            used.insert(r);
             return Some(r);
         }
     }
@@ -1555,14 +1683,104 @@ fn band_clear(g: &Grid, r: Rect) -> bool {
     })
 }
 
+/// the crate's sequence parser answers with the first arrow token from a
+/// fixed list that appears anywhere on a line, swaps the ends of `<-`
+/// arrows, and silently drops statements and messages it cannot tokenise:
+/// an open arrow (`->`) gains a filled head, `A->xB` mangles its target,
+/// `A<->B` invents a participant named ">B". To refuse rather than draw
+/// that, reread the source with the parser's own scan and keep only
+/// filled, one-way messages; anything else either draws nothing here or
+/// refuses whole (review #3, B4)
+fn seq_source_messages(src: &str) -> Result<Vec<(&str, &str)>, Fail> {
+    // the parser's exact token list, in its exact order
+    const TOKENS: [&str; 16] = [
+        "-->>+", "->>+", "-->+", "->+", "-->>-", "->>-", "-->-", "->-", "<--+", "<-+", "<--",
+        "<-", "-->>", "->>", "-->", "->",
+    ];
+    // statements that leave nothing for the art to misstate: lanes,
+    // frames and notes they create are checked by the gates in the
+    // raster. Statements that draw nothing at all (title, link, rect,
+    // autonumber) are deliberately not on this list: dropping written
+    // words silently is the one thing the terminal pager may not do
+    const STATEMENTS: [&str; 11] = [
+        "sequencediagram", "participant", "actor", "end", "alt", "else", "opt", "loop", "note",
+        "activate", "deactivate",
+    ];
+    let mut out: Vec<(&str, &str)> = Vec::new();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        let head = line
+            .split(|c: char| c == ':' || c.is_whitespace())
+            .next()
+            .unwrap_or(line)
+            .to_ascii_lowercase();
+        if STATEMENTS.contains(&head.as_str()) {
+            continue;
+        }
+        // mirror the parser's scan: first token (in its order) with a
+        // non-empty left and right wins, exactly as there
+        let mut found: Option<(&str, usize)> = None;
+        for t in TOKENS {
+            if let Some(pos) = line.find(t) {
+                if !line[..pos].trim().is_empty() && !line[pos + t.len()..].trim().is_empty() {
+                    found = Some((t, pos));
+                    break;
+                }
+            }
+        }
+        let Some((token, pos)) = found else {
+            return Err(gate("a statement this raster cannot draw refuses first", false));
+        };
+        if token.starts_with('<') {
+            return Err(gate("an arrowhead at the source end is not drawn", false));
+        }
+        // only a filled head pointing away from the sender: the parser
+        // marks every token it accepts as directed, open arrows included,
+        // so `->` and `-->` would arrive here wearing a head the source
+        // never wrote
+        if !token.trim_end_matches(['+', '-']).ends_with(">>") {
+            return Err(gate("an open or crossed arrowhead is not drawn", false));
+        }
+        let left = line[..pos].trim();
+        let right = line[pos + token.len()..]
+            .trim()
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .trim();
+        let plain_id = |p: &str| {
+            !p.is_empty()
+                && p.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        };
+        if !plain_id(left) || !plain_id(right) {
+            return Err(gate("a participant the message parse cannot name", false));
+        }
+        out.push((left, right));
+    }
+    Ok(out)
+}
+
 /// sequence diagrams speak in lanes and rows, not routed boxes: lifeline x
 /// maps to a column, message y to a row. Source order IS the topology, so
-/// messages are never merged or reordered. Rows are claimed top-down as
-/// frames, boxes, arrows and notes draw; when px rounding crowds two
-/// distinct events into one row, the later one slides by at most one row
-/// (never reorders, never moves px geometry - rounding is ours to resolve),
-/// and only a row that no shift can free refuses.
-fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Result<Vec<String>, Fail> {
+/// messages are never merged or reordered. A claim ledger keeps them apart:
+/// full-width lines (walls, dividers, arrows) own entire rows, boxes and
+/// notes own rectangles, and frame wall and divider cells are sacred, so no
+/// label or box may break a section open like a door the source never
+/// drew. Rounding crowds events into single rows at cell scale; slides are
+/// bounded, and after drawing one final gate re-reads every line against
+/// the px height it stands for and refuses unless the rows kept the events
+/// in the order the source told them (review #3, B1)
+fn sequence_raster(
+    src: &str,
+    layout: &Layout,
+    cols: usize,
+    rows: usize,
+    plain: bool,
+) -> Result<Vec<String>, Fail> {
     let DiagramData::Sequence(seq) = &layout.diagram else {
         return Err(gate("sequence without sequence data", false));
     };
@@ -1592,6 +1810,17 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
     }
     if seq.lifelines.len() < 2 {
         return Err(gate("sequence needs at least two lanes", false));
+    }
+    // the drawn messages must be exactly the written ones: same count,
+    // same order, same participants (review #3, B4)
+    let msgs = seq_source_messages(src)?;
+    if msgs.len() != layout.edges.len()
+        || msgs
+            .iter()
+            .zip(layout.edges.iter())
+            .any(|((f, t), e)| *f != e.from || *t != e.to)
+    {
+        return Err(gate("drawn messages differ from the written ones", false));
     }
     let mut g = Grid::new(cols, rows);
     let mut placed: Vec<(i32, i32, &str)> = Vec::new();
@@ -1623,8 +1852,16 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         }
         lane.insert(l.id.as_str(), c);
     }
-    // rows already spoken for; claim_rows slides by at most two
+
+    // the claim ledger: rows belong to full-width lines (walls, dividers,
+    // arrows and labels); boxes and notes own rectangles and may share a
+    // row with each other only where their columns do not touch; wall and
+    // divider cells are sacred to the section structure (review #3, B3)
     let mut used: HashSet<i32> = HashSet::new();
+    let mut boxes: Vec<Rect> = Vec::new();
+    let mut sacred: HashSet<(i32, i32)> = HashSet::new();
+    // every full-width line with the px it stands for, for the order gate
+    let mut lines_px: Vec<(f32, i32)> = Vec::new();
 
     // lifelines first, under everything that speaks
     for l in &seq.lifelines {
@@ -1654,10 +1891,36 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         }
     }
 
+    // 1. frames: two blocks that overlap where neither strictly contains
+    // the other have no honest reading at all: a message between their
+    // walls would belong to two sections at once, and the crate produces
+    // exactly that overlap for consecutive blocks on real fixtures
+    // (review #3, B2). Nested frames must nest strictly, walls included
+    let frects: Vec<Rect> = seq
+        .frames
+        .iter()
+        .map(|f| Rect {
+            x0: cx(f.x),
+            y0: cy(f.y),
+            x1: cx(f.x + f.width),
+            y1: cy(f.y + f.height),
+        })
+        .collect();
+    for i in 0..frects.len() {
+        for j in i + 1..frects.len() {
+            let (a, b) = (&frects[i], &frects[j]);
+            if a.x0 <= b.x1 && b.x0 <= a.x1 && a.y0 <= b.y1 && b.y0 <= a.y1 {
+                let a_in_b = b.x0 < a.x0 && a.x1 < b.x1 && b.y0 < a.y0 && a.y1 < b.y1;
+                let b_in_a = a.x0 < b.x0 && b.x1 < a.x1 && a.y0 < b.y0 && a.y1 < b.y1;
+                if !(a_in_b || b_in_a) {
+                    return Err(gate("two frames overlap where neither holds the other", true));
+                }
+            }
+        }
+    }
 
-
-    // 1. frames first (FRAME level: actors and messages win every cell):
-    // walls claim their rows, so arrows inside can never crowd a wall out
+    // walls claim their rows, so arrows inside can never crowd a wall out;
+    // every wall and divider cell is sacred from then on
     struct FrameRows {
         x0: i32,
         x1: i32,
@@ -1675,10 +1938,19 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         if want_h < 3 {
             return Err(gate("a frame this short cannot hold its sections", true));
         }
-        let y0 = claim_rows(cy(f.y), 1, &mut used, rows)
+        let y0 = claim_row(cy(f.y), f.y, &mut used, rows, &boxes, &lines_px)
             .ok_or_else(|| gate("a frame wall fuses into a used row", true))?;
-        let y1 = claim_rows(cy(f.y + f.height), 1, &mut used, rows)
-            .ok_or_else(|| gate("a frame wall fuses into a used row", true))?;
+        lines_px.push((f.y, y0));
+        let y1 = claim_row(
+            cy(f.y + f.height),
+            f.y + f.height,
+            &mut used,
+            rows,
+            &boxes,
+            &lines_px,
+        )
+        .ok_or_else(|| gate("a frame wall fuses into a used row", true))?;
+        lines_px.push((f.y + f.height, y1));
         if y1 - y0 < 3 {
             return Err(gate("a frame this short cannot hold its sections", true));
         }
@@ -1694,18 +1966,28 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         g.put(x1, y0, tr, FRAME);
         g.put(x0, y1, bl, FRAME);
         g.put(x1, y1, br, FRAME);
+        for x in x0..=x1 {
+            sacred.insert((x, y0));
+            sacred.insert((x, y1));
+        }
+        for y in y0..=y1 {
+            sacred.insert((x0, y));
+            sacred.insert((x1, y));
+        }
         frame_rows.push((fi, FrameRows { x0, x1, y0, y1, lines: Vec::new() }));
     }
     // labels and dividers after the walls exist (labels ride walls; the
-    // SVG label pentagon punches the wall, TEXT over FRAME is the same word)
+    // SVG label pentagon punches its own wall, TEXT over FRAME is the
+    // same word, but never a corner and never another section's line)
     let mut last_label_end: HashMap<(usize, i32), i32> = HashMap::new();
     for (fi, fr) in &mut frame_rows {
         let f = &seq.frames[*fi];
         // dividers claim rows FIRST so labels can snap to where the line
         // actually ended up after any slide
         for d in &f.dividers {
-            let dy = claim_rows(cy(*d), 1, &mut used, rows)
+            let dy = claim_row(cy(*d), *d, &mut used, rows, &boxes, &lines_px)
                 .ok_or_else(|| gate("a frame divider fuses into a used row", true))?;
+            lines_px.push((*d, dy));
             if dy <= fr.y0 || dy >= fr.y1 {
                 return Err(gate("a frame divider escapes its frame", true));
             }
@@ -1714,6 +1996,9 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
             }
             g.put(fr.x0, dy, t_r, FRAME);
             g.put(fr.x1, dy, t_l, FRAME);
+            for x in fr.x0..=fr.x1 {
+                sacred.insert((x, dy));
+            }
             fr.lines.push(dy);
         }
         let keyword = std::iter::once(&f.label).chain(f.section_labels.iter());
@@ -1742,6 +2027,21 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
                 // the SVG ("opt [debug]"): a later label on the same line
                 // continues where the last one ended, never overwrites it
                 let x = last_label_end.get(&(*fi, y)).map_or(x, |&end| x.max(end + 1));
+                // the pentagon may punch its own wall, but running off the
+                // wall end would erase the frame corner: a wider label
+                // needs a wider frame, and clipping a section name is a
+                // word dropped (review #3, B2)
+                if x + w > fr.x1 {
+                    return Err(gate("a frame label runs over its corner", true));
+                }
+                for xx in x..x + w {
+                    let own_line = xx > fr.x0 && xx < fr.x1;
+                    let clear = matches!(g.get(xx, y), Some(c) if c.owner <= FRAME)
+                        && (!sacred.contains(&(xx, y)) || own_line);
+                    if !clear {
+                        return Err(gate("a frame label lands on drawn art", true));
+                    }
+                }
                 g.text(x, y, line, TEXT);
                 placed.push((x, y, line));
                 last_label_end.insert((*fi, y), x + w);
@@ -1749,7 +2049,9 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         }
     }
 
-    // 2. actor boxes at head and foot (NODE level over frame walls)
+    // 2. actor boxes at head and foot (NODE level over frame walls): a
+    // box needs cells of its own: no line row, no other box, nothing
+    // drawn underneath, and no sacred wall cell inside it
     for n in layout.nodes.values().chain(seq.footboxes.iter()) {
         let n_rows = (cy(n.y + n.height) - cy(n.y) + 1).max(2);
         let mut band = None;
@@ -1764,7 +2066,13 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
                 x1: cx(n.x + n.width),
                 y1: y0 + n_rows - 1,
             };
-            if band_clear(&g, r) {
+            let free = (r.y0..=r.y1).all(|y| !used.contains(&y))
+                && !boxes.iter().any(|b| {
+                    b.x0 <= r.x1 && r.x0 <= b.x1 && b.y0 <= r.y1 && r.y0 <= b.y1
+                })
+                && !(r.y0..=r.y1).any(|y| (r.x0..=r.x1).any(|x| sacred.contains(&(x, y))))
+                && band_clear(&g, r);
+            if free {
                 band = Some(r);
                 break;
             }
@@ -1774,6 +2082,7 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
             return Err(gate("an actor box this thin cannot hold its name", true));
         }
         put_label_box(&mut g, r, &n.label.lines, (tl, tr, bl, br, hb, vb), &mut placed, false)?;
+        boxes.push(r);
     }
 
     // 4. messages: one row each, in source order, never merged
@@ -1807,8 +2116,9 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         }
         // the arrow keeps (or slides to) one exact row; its label then
         // floats above it, SVG-style, choosing any clear row nearby
-        let mr = claim_rows(cy(e.points[0].1), 1, &mut used, rows)
+        let mr = claim_row(cy(e.points[0].1), e.points[0].1, &mut used, rows, &boxes, &lines_px)
             .ok_or_else(|| gate("two messages fuse into one row", true))?;
+        lines_px.push((e.points[0].1, mr));
         if has_label {
             let line = e.label.as_ref().unwrap().lines.first().unwrap();
             let w = visible_width(line) as i32;
@@ -1817,15 +2127,20 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
             // the SVG label field punches through lane lines - lanes may
             // sit under it, anything already spoken for may not; a label
             // may rise or sink one row (SVG hangs it loosely), the arrow
-            // it names never moves
+            // it names never moves, and no claimed line may lie between
+            // the two: a label floating over a wall would file its
+            // message into the section above or below (review #3, B1)
             let mut ly = None;
             for r in [mr - 1, mr - 2, mr + 1] {
                 if r <= 0 || r >= rows as i32 || used.contains(&r) {
                     continue;
                 }
+                if (mr.min(r) + 1..mr.max(r)).any(|q| used.contains(&q)) {
+                    continue;
+                }
                 if (lx..lx + w).all(|x| match g.get(x, r) {
                     None => false,
-                    Some(c) => c.owner <= FRAME,
+                    Some(c) => c.owner <= FRAME && !sacred.contains(&(x, r)),
                 }) {
                     ly = Some(r);
                     break;
@@ -1837,15 +2152,19 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
             placed.push((lx, ly, line));
         }
         if ca == cb {
-            // self message: the 4-point stub loop right of the lane
+            // self message: the 4-point stub loop right of the lane. The
+            // route may cross a frame wall (a real crossing, the SVG
+            // draws the same) but can never share a row with one: the
+            // claim ledger made those rows unavailable above
             if e.points.len() < 4 {
                 return Err(gate("self message route not understood", false));
             }
-            let r1 = claim_rows(cy(e.points[3].1), 1, &mut used, rows)
+            let r1 = claim_row(cy(e.points[3].1), e.points[3].1, &mut used, rows, &boxes, &lines_px)
                 .ok_or_else(|| gate("self message return fuses into another row", true))?;
             if r1 <= mr {
                 return Err(gate("self message return rides above its start", true));
             }
+            lines_px.push((e.points[3].1, r1));
             let s = cx(e.points[1].0).max(ca + 2).min(cols as i32 - 2);
             if s <= ca + 1 {
                 return Err(gate("no room beside the lane for a self loop", true));
@@ -1886,7 +2205,9 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
         }
     }
 
-    // 5. notes over: a boxed label across its participants
+    // 5. notes over: a boxed label across its participants, needing cells
+    // as free as an actor box's (messages are drawn: band_clear would
+    // refuse them, so a note slides or refuses, never overwrites)
     for nt in &seq.notes {
         let n_rows = (cy(nt.y + nt.height) - cy(nt.y) + 1).max(2);
         let mut band = None;
@@ -1901,7 +2222,13 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
                 x1: cx(nt.x + nt.width),
                 y1: y0 + n_rows - 1,
             };
-            if band_clear(&g, r) {
+            let free = (r.y0..=r.y1).all(|y| !used.contains(&y))
+                && !boxes.iter().any(|b| {
+                    b.x0 <= r.x1 && r.x0 <= b.x1 && b.y0 <= r.y1 && r.y0 <= b.y1
+                })
+                && !(r.y0..=r.y1).any(|y| (r.x0..=r.x1).any(|x| sacred.contains(&(x, y))))
+                && band_clear(&g, r);
+            if free {
                 band = Some(r);
                 break;
             }
@@ -1911,6 +2238,21 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
             return Err(gate("a note this thin cannot hold its text", true));
         }
         put_label_box(&mut g, r, &nt.label.lines, (tl, tr, bl, br, hb, vb), &mut placed, false)?;
+        boxes.push(r);
+    }
+
+    // 6. order honesty: every line stands at the height the source put
+    // it. A slide that inverted two events, or split one px height into
+    // two rows, draws a sequence nobody wrote (review #3, B1/B2)
+    lines_px.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for pair in lines_px.windows(2) {
+        let ((pa, ra), (pb, rb)) = (pair[0], pair[1]);
+        if pa == pb && ra != rb {
+            return Err(gate("one event height split across two rows", true));
+        }
+        if pa < pb && ra >= rb {
+            return Err(gate("a slide inverted the order of events", true));
+        }
     }
 
     check_survival(&g, &placed)?;
@@ -1920,12 +2262,48 @@ fn sequence_raster(layout: &Layout, cols: usize, rows: usize, plain: bool) -> Re
 /// a pie is two numbers per slice and a name: the honest text form is the
 /// list itself (title, label, share). Percentages show alongside the raw
 /// value so rounding that does not add to 100 cannot mislead.
-fn pie_list(layout: &Layout, cols: usize) -> Result<Vec<String>, Fail> {
+fn pie_list(src: &str, layout: &Layout, cols: usize) -> Result<Vec<String>, Fail> {
     let DiagramData::Pie(pie) = &layout.diagram else {
         return Err(gate("pie without pie data", false));
     };
-    if pie.slices.is_empty() || pie.slices.len() != pie.legend.len() {
+    if pie.slices.is_empty() {
         return Err(gate("pie data shape not understood", false));
+    }
+    // the renderer drops slices too thin to see (1 in 100000 vanishes):
+    // every written slice must reach the list or the chart silently lies
+    // with a rounded-away category (review #3, B5)
+    let mut written: Vec<(&str, f32)> = Vec::new();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        let Some((label, value)) = line.rsplit_once(':') else {
+            continue; // the `pie showData title ...` header and comments
+        };
+        let Ok(value) = value.trim().parse::<f32>() else {
+            return Err(gate("a pie line the parser may not understand", false));
+        };
+        let label = label.trim().trim_matches('"');
+        if label.is_empty() {
+            return Err(gate("a pie line the parser may not understand", false));
+        }
+        written.push((label, value));
+    }
+    if written.len() != pie.slices.len() {
+        return Err(gate("the pie lost a written slice", false));
+    }
+    let mut drawn: Vec<(String, f32)> = pie
+        .slices
+        .iter()
+        .map(|sl| (sl.label.lines.join(" ").trim().to_string(), sl.value))
+        .collect();
+    written.sort_by(|a, b| a.0.cmp(b.0).then(a.1.total_cmp(&b.1)));
+    drawn.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    if written.iter().zip(&drawn).any(|((lw, vw), (ld, vd))| {
+        *lw != ld.as_str() || vw.total_cmp(vd) != std::cmp::Ordering::Equal
+    }) {
+        return Err(gate("the pie renamed or resized a slice", false));
     }
     let total: f64 = pie.slices.iter().map(|v| v.value as f64).sum();
     if !total.is_finite() || total <= 0.0 {
@@ -1946,19 +2324,27 @@ fn pie_list(layout: &Layout, cols: usize) -> Result<Vec<String>, Fail> {
             }
         }
     }
-    for (sl, lg) in pie.slices.iter().zip(&pie.legend) {
-        // the legend label is what mermaid shows (including [value] with
-        // showData); the raw value column keeps rounded shares honest
-        if sl.value as f64 / total * 100.0 > 100.5 || lg.label.lines.len() > 1 {
+    // one row per slice, read from the slice itself: the crate sorts the
+    // legend independently, so zipping slices against legend entries pairs
+    // wrong names with wrong values (review #3, B5). The raw value rides
+    // along so rounded shares stay honest, exactly as `showData` shows it
+    for sl in &pie.slices {
+        if sl.value as f64 / total * 100.0 > 100.5 || sl.label.lines.len() > 1 {
             return Err(gate("pie entry not drawable as text", false));
         }
-        let label = lg.label.lines.join(" ");
+        let label = sl.label.lines.join(" ");
         let label = label.trim();
         if !printable(label) || label.is_empty() {
             return Err(gate("pie label is not drawable", false));
         }
         let pct = sl.value as f64 / total * 100.0;
-        let line = format!("  {label}  {:.1}%", pct);
+        // a non-zero slice must never display as zero
+        let share = if pct > 0.0 && pct < 0.05 {
+            "<0.1%".to_string()
+        } else {
+            format!("{pct:.1}%")
+        };
+        let line = format!("  {label}  [{:.2}]  {share}", sl.value);
         if visible_width(&line) > cols {
             return Err(gate("a pie label is too wide", false));
         }
