@@ -183,9 +183,25 @@ The layout does not depend on width; only rasterization does. Memoize
 - `Pager` gained the field plus an extracted `rerender()` (resize and `D`
   both call it); it rebuilds `plain` so search matches art rows, and clamps
   `top` because art is shorter than source.
-- First-render latency is bounded by the 40-node/60-edge caps (≤ ~1 s per
-  diagram, ×3 spacing variants worst case); layout cache makes rerenders,
-  resizes and `D` round-trips free. `--no-diagrams` is the escape hatch.
+- Engine cost measured (release, fast_text_metrics): 3-node 0.01 s, ~15
+  nodes ~0.3 s, 25-node/35-edge ~0.95 s each — within the 40/60 caps a
+  10-diagram doc is ~9.5 s total, so no synchronous path is safe (review
+  #2 blocker: 2.3–9.5 s blind startup measured). The engine cannot be
+  aborted mid-run, so a per-call deadline buys nothing; the pager must
+  simply never start it inside a frame.
+- Pager render path is probe-only: cache answers (`Art`/`Source`), fences
+  the cache has not decided draw as source and queue as `(src, cols)` —
+  one warm engine run per idle tick, art pops in as each completes while
+  keys stay buffered. `cols` is part of the key (quotes narrow by two,
+  mirrored from `render.rs`) so every drain decides exactly what its
+  probe asked: the queue provably converges. `CACHE_MAX` 512 keeps
+  layouts across toggles, docs and resizes. `print_plain` stays
+  synchronous (batch output may wait); `--no-diagrams` is the opt-out.
+- `rerender()` preserves the reading place (nearest-copy anchor of the
+  top visible row), resets `last_match` (an index into dead rows), and
+  rebuilds the warm queue; plain-mode art fences as ```` ```text mermaid ````
+  so copied art is never invalid mermaid. `--color` pipes are the one
+  case where piped output is art, and the docs now say so.
 - Upstream quirk inherited from mermaid-rs (identical in the shipped GUI,
   so terminal and window agree): chained edges with inline node definitions
   on one line (`A -->|l| B[x] --> C[y]`) mis-tokenize; mermaid.js would

@@ -102,14 +102,24 @@ check("non-UTF-8 input is shown, not rejected", r.returncode == 0 and "caf\ufffd
 mmd = doc("m.md", "```mermaid\ngraph LR\n  A[alpha] --> B[omega]\n```\n")
 out, _ = run_pty([mmd], [b"q"])
 vis = visible(out)
+# the first frame honestly shows source (warm runs on idle ticks), so the
+# replaces-source claim belongs to the last painted frame, split on raw
+# bytes because visible() would strip the frame marker itself
+frames = [visible(f) for f in out.split(b"\x1b[H")]
 check("pager shows mermaid art by default", "►" in vis and "alpha" in vis, vis[:200])
-check("art replaces the source", "graph LR" not in vis)
+final = frames[-1]
+check("art replaces the source", "graph LR" not in final, final[:200])
 out, _ = run_pty([mmd], [b"D", b"q"])
 check("D toggles back to source", "graph" in visible(out) and "-->" in visible(out))
 out, _ = run_pty(["--no-diagrams", mmd], [b"q"])
 check("--no-diagrams starts on source", "graph" in visible(out) and "►" not in visible(out))
 piped = subprocess.run([MDGLASS, os.path.join(tmp, "m.md")], capture_output=True).stdout
 check("piped mermaid stays escape-free grep-able source", b"graph LR" in piped and b"\x1b" not in piped, piped[:60])
+out, _ = run_pty([mmd], [b"/alpha", b"\r", b"q"])
+check("search highlights the node label inside the art", b"\x1b[7ma" in out)
+broken = doc("bad.md", "```mermaid\nnot a diagram\n```\n")
+out, _ = run_pty([broken], [b"q"])
+check("broken mermaid stays code in the pager", "not a diagram" in visible(out))
 
 print(f"\n{len(failures)} failed" if failures else "\nall pty checks passed")
 sys.exit(1 if failures else 0)

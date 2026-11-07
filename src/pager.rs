@@ -3,7 +3,7 @@
 // `Pager` holds all state and turns keys into frames; `run` only shuttles
 // bytes between it and the terminal, so the logic is testable without a TTY.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::thread::sleep;
 use std::time::Duration;
@@ -13,7 +13,8 @@ use termion::raw::IntoRawMode;
 use termion::{async_stdin, AsyncReader};
 
 use crate::ansi::{map_visible, pad_to, sg, strip_ansi, truncate_to, visible_width, wrap, RESET};
-use crate::render::{render, Cfg};
+use crate::boxart::{self, Outcome};
+use crate::render::{parse, render, Cfg, Line};
 
 /// Decode raw terminal input. termion reports a bare ESC as a parse error, so
 /// an ESC with nothing (or another ESC) after it is mapped to `Key::Esc` here.
@@ -59,6 +60,22 @@ struct FileDoc {
     top: usize,
 }
 
+/// Every mermaid fence in draw order, with the width render() will draw it
+/// at: blockquotes recurse two columns narrower (mirrors render.rs).
+fn mermaid_fences(lines: &[Line], cols: usize, out: &mut Vec<(String, usize)>) {
+    for line in lines {
+        match line {
+            Line::Code { lang, lines } => {
+                if crate::vector::is_mermaid(lang) {
+                    out.push((lines.join("\n"), cols));
+                }
+            }
+            Line::Quote { inner } => mermaid_fences(inner, cols.saturating_sub(2).max(20), out),
+            _ => {}
+        }
+    }
+}
+
 /// Lowercase one char to one char, so folded text keeps the same char indices.
 fn fold(s: &str) -> String {
     s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
@@ -70,6 +87,10 @@ pub struct Pager {
     color: bool,
     urls: bool,
     diagrams: bool,
+    /// mermaid fences the cache cannot answer yet: (source, the width they
+    /// were probed at). One is computed per idle tick, so opening a doc or
+    /// pressing D never blocks the screen on the layout engine.
+    warm_q: VecDeque<(String, usize)>,
     width: usize,
     height: usize,
     needle: String,
@@ -104,6 +125,7 @@ impl Pager {
             color,
             urls,
             diagrams,
+            warm_q: VecDeque::new(),
             width: 0,
             height: 0,
             needle: String::new(),
@@ -117,21 +139,88 @@ impl Pager {
     }
 
     /// Re-render every document at the current width and flags. Called on
-    /// resize and on the D toggle; `plain` must be rebuilt too, or search
-    /// would keep matching rows that are no longer on screen.
+    /// resize, on the D toggle and after each warm tick; `plain` must be
+    /// rebuilt too, or search would keep matching rows that are no longer
+    /// on screen. Art comes from cache only (art_probe_only): anything the
+    /// engine has not decided yet stays source and lands in `warm_q`.
     fn rerender(&mut self) {
-        let cfg = Cfg { diagrams: self.diagrams, ..Cfg::new(self.color, self.width, self.urls) };
+        // a match index into rows that are about to vanish must not survive
+        self.last_match = None;
+        let cfg = Cfg {
+            diagrams: self.diagrams,
+            art_probe_only: true,
+            ..Cfg::new(self.color, self.width, self.urls)
+        };
         for d in self.docs.iter_mut() {
+            // keep the reading place across the toggle: anchor on the first
+            // findable row of the old view and re-find the nearest copy of
+            // it in the new rows (art and source shift everything below)
+            let anchor = (d.top..(d.top + 3).min(d.plain.len()))
+                .find(|&i| d.plain[i].trim().len() >= 2)
+                .map(|i| (d.plain[i].clone(), i, d.top));
             // render() wraps to `width`; wrap() again only guards rows that cannot shrink
             d.lines = render(&d.content, &cfg).iter().flat_map(|l| wrap(l, self.width)).collect();
             d.plain = d.lines.iter().map(|l| fold(&strip_ansi(l))).collect();
+            if let Some((text, old_i, old_top)) = anchor {
+                let mut best: Option<(usize, usize)> = None; // (distance, index)
+                for (j, line) in d.plain.iter().enumerate() {
+                    if *line == text {
+                        let dist = j.abs_diff(old_i);
+                        if dist < best.map_or(usize::MAX, |(bd, _)| bd) {
+                            best = Some((dist, j));
+                        }
+                    }
+                }
+                if let Some((_, j)) = best {
+                    d.top = j.saturating_sub(old_top - old_i);
+                }
+            }
         }
+        self.rebuild_warm_q();
         // art is shorter than source: a top deep in the source must not
         // leave the screen blank until the next keypress
         let vh = self.vh();
         for d in self.docs.iter_mut() {
             d.top = d.top.min(d.lines.len().saturating_sub(vh));
         }
+    }
+
+    /// Re-arm every fence a probe could not decide at the width it will be
+    /// drawn at. (src, cols) rather than src alone: a fence inside a quote
+    /// renders two columns narrower and its decision is width-specific;
+    /// warming with the same cols as the probe makes the queue converge
+    /// after exactly one pass.
+    fn rebuild_warm_q(&mut self) {
+        self.warm_q.clear();
+        if !self.diagrams {
+            return;
+        }
+        let plain = !self.color;
+        let cfg = Cfg { diagrams: true, ..Cfg::new(self.color, self.width, self.urls) };
+        let mut seen: HashSet<(String, usize)> = HashSet::new();
+        for d in self.docs.iter() {
+            let mut fences = Vec::new();
+            mermaid_fences(&parse(&d.content, &cfg), self.width, &mut fences);
+            for key in fences {
+                let (src, cols) = (&key.0, key.1);
+                if !seen.insert(key.clone()) {
+                    continue; // same fence at the same width: decided once
+                }
+                if matches!(boxart::probe(src, cols, plain), Outcome::Unknown) {
+                    self.warm_q.push_back(key);
+                }
+            }
+        }
+    }
+
+    /// Draw one pending diagram on an idle tick: engine time goes between
+    /// frames, never during one. Returns true when work happened, so the
+    /// caller repaints the (possibly) new art.
+    pub(crate) fn warm_one(&mut self) -> bool {
+        let Some((src, cols)) = self.warm_q.pop_front() else { return false };
+        boxart::terminal_ascii(&src, cols, !self.color); // fills the cache; refusals memoize
+        self.rerender();
+        true
     }
 
     pub fn resize(&mut self, width: usize, height: usize) {
@@ -404,6 +493,11 @@ pub fn run(files: &[(String, String)], color: bool, urls: bool, diagrams: bool) 
                         pager.resize(now.0 as usize, now.1 as usize);
                         dirty = true;
                     }
+                }
+                // no key pending: this tick belongs to the next diagram,
+                // which pops in as soon as it is drawn
+                if pager.warm_one() {
+                    dirty = true;
                 }
                 sleep(Duration::from_millis(15));
             }

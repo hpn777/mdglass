@@ -7,6 +7,18 @@ fn pager(docs: &[&str], height: usize) -> Pager {
     pager_diag(docs, height, false)
 }
 
+/// Escape-free text of the current file, for content assertions.
+fn shown(p: &Pager) -> String {
+    strip_ansi(&p.docs[0].lines.join("\n"))
+}
+
+/// Run the idle warm ticks the real loop performs between keys, so every
+/// pending diagram has been drawn (Pager::new deliberately never blocks on
+/// the engine: a first frame must appear instantly).
+fn warm(p: &mut Pager) {
+    while p.warm_one() {}
+}
+
 fn pager_diag(docs: &[&str], height: usize, diagrams: bool) -> Pager {
     let files: Vec<(String, String)> =
         docs.iter().enumerate().map(|(i, d)| (format!("f{i}.md"), d.to_string())).collect();
@@ -138,14 +150,15 @@ fn frame_draws_from_home_with_one_row_per_line() {
 #[test]
 fn d_toggle_swaps_mermaid_art_and_source() {
     let doc = "```mermaid\ngraph LR\n A[alpha] --> B[omega]\n```\n";
-    let shown = |p: &Pager| strip_ansi(&p.docs[0].lines.join("\n"));
     // off by default (pager()): source stays source even for valid mermaid
     let p = pager(&[doc], 24);
     let all = shown(&p);
     assert!(all.contains("graph") && all.contains("LR"), "source vanished with diagrams off");
     assert!(!all.contains('►'), "art shown while toggled off");
-    // on: box art with its labels, source gone
+    // on: box art with its labels, source gone (after the idle warm ticks)
     let mut p = pager_diag(&[doc], 24, true);
+    assert!(shown(&p).contains("graph"), "first frame blocked on the engine");
+    assert!(p.warm_one(), "fence was not queued for warming");
     let all = shown(&p);
     assert!(all.contains('►') && all.contains("alpha") && all.contains("omega"), "no art:\n{all}");
     assert!(!all.contains("graph"), "source leaked beside the art");
@@ -170,6 +183,28 @@ fn d_toggle_swaps_mermaid_art_and_source() {
     assert!(p.frame().contains("omega"), "frame blanked: top not clamped after shortening");
     p.resize(80, 24);
     assert!(shown(&p).contains('►'), "resize lost the diagram mode");
+}
+
+#[test]
+fn quoted_fences_warm_at_their_narrower_width() {
+    let doc = "> ```mermaid\n> graph LR\n>  A[alpha] --> B[omega]\n> ```\n";
+    let mut p = pager_diag(&[doc], 24, true);
+    assert_eq!(p.warm_q.len(), 1, "quoted fence not queued");
+    // the queue keys on the width render() will use: quotes narrow by two
+    assert_eq!(p.warm_q[0].1, 58, "quote width not mirrored");
+    let mut spins = 0;
+    while p.warm_one() {
+        spins += 1;
+        assert!(spins < 8, "warm queue does not converge: {:?}", p.warm_q);
+    }
+    assert!(p.warm_q.is_empty(), "queue left armed after warm: {:?}", p.warm_q);
+    assert!(shown(&p).contains('\u{25ba}'), "quoted diagram never drawn");
+    // the same thread just drew this source at both widths: a fresh pager
+    // needs no warming at all, the cache answers every probe
+    let doc2 = "```mermaid\ngraph LR\n A[alpha] --> B[omega]\n```\n\n> ```mermaid\n> graph LR\n>  A[alpha] --> B[omega]\n> ```\n";
+    let p = pager_diag(&[doc2], 24, true);
+    assert!(p.warm_q.is_empty(), "already-decided fences re-queued: {:?}", p.warm_q);
+    assert_eq!(shown(&p).matches('\u{25ba}').count(), 2, "both copies from cache");
 }
 
 #[test]

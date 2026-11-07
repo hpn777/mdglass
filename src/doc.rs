@@ -16,13 +16,17 @@ pub struct Cfg {
     /// (see boxart.rs); false keeps the source block. Default off so the
     /// GUI and every existing caller are untouched; the pager opts in.
     pub diagrams: bool,
+    /// pager mode: use art only where it is already computed (boxart::probe)
+    /// and never run the layout engine inside a frame the user awaits; the
+    /// pager draws Unknown fences as source and warms them on idle ticks
+    pub art_probe_only: bool,
     /// Reference-link definitions (`[label]: url`), keyed by normalized label.
     pub refs: HashMap<String, String>,
 }
 
 impl Cfg {
     pub fn new(color: bool, width: usize, urls: bool) -> Cfg {
-        Cfg { color, width, urls, diagrams: false, refs: HashMap::new() }
+        Cfg { color, width, urls, diagrams: false, art_probe_only: false, refs: HashMap::new() }
     }
 
     fn narrow(&self, by: usize) -> Cfg {

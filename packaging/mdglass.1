@@ -29,7 +29,8 @@ are drawn as vector pictures, in a palette that follows the light/dark
 style; a block that cannot be drawn (no SVG loader,
 unparsable input) is shown as its code instead. In the terminal, mermaid
 fences are drawn as ASCII box art instead (see \fB\-\-no\-diagrams\fR and
-the \fBD\fR key); piped output always keeps the markdown source.
+the \fBD\fR key); piped output keeps the markdown source unless
+\fB\-\-color\fR forces art.
 .TP
 .BR \-n ", " \-\-no\-pager
 Print the rendered output to standard output instead of opening the pager.
@@ -46,7 +47,8 @@ Do not show link URLs after the link text.
 .B \-\-no\-diagrams
 Render mermaid fences as their source code instead of ASCII box art.
 Box art normally appears only where a human reads it: in the pager, or
-in \fB\-n\fR output when colors are on.
+in \fB\-n\fR output when colors are on. Combine with \fB\-\-color\fR when
+redirecting to a file that should still be searched as source.
 .TP
 .BR \-h ", " \-\-help
 Print help and exit.

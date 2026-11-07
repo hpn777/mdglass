@@ -121,11 +121,23 @@ pub fn render_lines(lines: &[Line], cfg: &Cfg) -> Vec<String> {
             }
             Line::Code { lang, lines } => {
                 // honest mermaid art in place of the source, when asked and
-                // possible; boxart refuses anything it cannot draw truthfully
+                // possible; boxart refuses anything it cannot draw truthfully.
+                // the pager (art_probe_only) never waits on the engine here:
+                // pending fences stay source and warm up on its idle ticks
                 if cfg.diagrams && crate::vector::is_mermaid(lang) {
-                    if let Some(art) = crate::boxart::terminal_ascii(&lines.join("\n"), cfg.width, !cfg.color)
-                    {
-                        out.push(fence_top(cfg, lang));
+                    let mmd = lines.join("\n");
+                    let art = if cfg.art_probe_only {
+                        match crate::boxart::probe(&mmd, cfg.width, !cfg.color) {
+                            crate::boxart::Outcome::Art(a) => Some(a),
+                            _ => None,
+                        }
+                    } else {
+                        crate::boxart::terminal_ascii(&mmd, cfg.width, !cfg.color)
+                    };
+                    if let Some(art) = art {
+                        // plain art between ```mermaid fences would be a
+                        // markdown lie (invalid mermaid if copied); say text
+                        out.push(fence_top(cfg, if cfg.color { lang.as_str() } else { "text mermaid" }));
                         for r in art {
                             // never re-wrap: a sheared box is a lie; rows
                             // arrived within cfg.width, padding only shades

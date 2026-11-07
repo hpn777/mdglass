@@ -42,8 +42,8 @@ across two lines, copied text keeps the breaks, and resizing or zooming clears a
 graphics in the window (in a palette that follows your light/dark setting), and honest
 ASCII box art in the terminal, where node names stay searchable text. Press `D` to flip
 between art and source, or start with `--no-diagrams`. Any diagram that cannot be drawn
-truthfully at your width stays a code block; piped output always stays markdown source,
-so `mdglass file.md | grep` works.
+truthfully at your width stays a code block; piped output stays markdown source
+(unless `--color` forces art), so `mdglass file.md | grep` works.
 `examples/diagrams.md` demos every kind, with `examples/screenshots/` as proof.
 
 See `man mdglass` for all options.

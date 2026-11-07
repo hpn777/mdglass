@@ -17,13 +17,7 @@
 //! panic hook: a panic message printed into the alternate screen would
 //! corrupt the display even when caught. Known lossy trade: edge styles
 //! (thick/dotted) all draw solid; direction and connectivity stay truthful.
-//!
-//! Phase 2 callers: art rows must bypass `code_lines` wrapping (a shear is a
-//! lie), stay ESC-sanitized, and be re-padded to `cfg.width`; decide art vs
-//! source from the plumbed flag per render, never from cache contents.
 
-// the renderer gets wired into render.rs in phase 2; until then its entry
-// point is only reachable from tests
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::panic;
@@ -55,7 +49,7 @@ const MAX_EDGES: usize = 60;
 /// deserves the source.
 const MAX_SHARED_CELLS: usize = 6;
 /// Layouts (and refusals) memoized per source text; see `cached_layout`.
-const CACHE_MAX: usize = 64;
+const CACHE_MAX: usize = 512;
 
 /// layout configs tried: default, then at most one retry per axis
 const V_DEFAULT: usize = 0;
@@ -93,26 +87,90 @@ thread_local! {
 /// ASCII/Unicode box art for a mermaid flowchart, or `None` to keep the code
 /// block. `plain` forces pure ASCII (+---, >) for `--color`-less output.
 pub fn terminal_ascii(text: &str, max_cols: usize, plain: bool) -> Option<Vec<String>> {
+    match decide(text, max_cols, plain, &mut |v| Some(cached_layout(text, v))) {
+        Outcome::Art(art) => Some(art),
+        _ => None,
+    }
+}
+
+/// What `terminal_ascii` would return, without ever running the engine:
+/// the pager draws from `Art`/`Source` immediately and re-arms `Unknown`
+/// fences into an idle-time warm queue (the engine cannot be aborted
+/// mid-run, so it must never start inside a frame the user is waiting on).
+#[derive(Debug, PartialEq)]
+pub(crate) enum Outcome {
+    Art(Vec<String>),
+    Source,
+    Unknown,
+}
+
+pub(crate) fn probe(text: &str, max_cols: usize, plain: bool) -> Outcome {
+    decide(text, max_cols, plain, &mut |v| peek_layout(text, v))
+}
+
+/// The spacing ladder shared by the full path and the probe, so the probe's
+/// answer can never drift from what a real run would decide. `layout_of`
+/// answers per variant: Some(layout) decided (None = memoized refusal), or
+/// None = never tried, which only the full path may resolve.
+fn decide(
+    text: &str,
+    max_cols: usize,
+    plain: bool,
+    layout_of: &mut dyn FnMut(usize) -> Option<Option<Rc<Layout>>>,
+) -> Outcome {
     if !crate::vector::fits(text) || max_cols < MIN_COLS {
-        return None;
+        return Outcome::Source;
     }
     // uniform scale only (never squish either axis alone: that cuts through
     // labels); the spacing config is the only knob, turned at most once
-    let default_fit = cached_layout(text, V_DEFAULT).filter(|l| fits_window(l, max_cols));
-    let (layout, tried_default) = match default_fit {
-        Some(l) => (l, true),
-        // roomy is strictly wider than default, so it never follows a
-        // width failure — only a raster retry
-        None => (cached_layout(text, V_COMPACT).filter(|l| fits_window(l, max_cols))?, false),
+    let mut pick = |variant: usize| -> Pick {
+        match layout_of(variant) {
+            None => Pick::Unknown,
+            Some(None) => Pick::Source,
+            Some(Some(l)) if fits_window(&l, max_cols) => Pick::Draw(l),
+            Some(Some(_)) => Pick::Source, // decided; just too wide for this window
+        }
+    };
+    // roomy is strictly wider than default, so it never follows a width
+    // failure — only a raster retry
+    let (layout, tried_default) = match pick(V_DEFAULT) {
+        Pick::Draw(l) => (l, true),
+        Pick::Source => match pick(V_COMPACT) {
+            Pick::Draw(l) => (l, false),
+            Pick::Source => return Outcome::Source,
+            Pick::Unknown => return Outcome::Unknown,
+        },
+        Pick::Unknown => return Outcome::Unknown,
     };
     match raster(&layout, width_cols(&layout), height_rows(&layout), plain) {
-        Ok(art) => Some(art),
+        Ok(art) => Outcome::Art(art),
         // boxes/routes collided at cell scale: give dagre more room once
-        Err(Fail::Retry) if tried_default => cached_layout(text, V_ROOMY)
-            .filter(|l| fits_window(l, max_cols))
-            .and_then(|l| raster(&l, width_cols(&l), height_rows(&l), plain).ok()),
-        Err(_) => None,
+        Err(Fail::Retry) if tried_default => match pick(V_ROOMY) {
+            Pick::Draw(l) => match raster(&l, width_cols(&l), height_rows(&l), plain) {
+                Ok(art) => Outcome::Art(art),
+                Err(_) => Outcome::Source,
+            },
+            Pick::Source => Outcome::Source,
+            Pick::Unknown => Outcome::Unknown,
+        },
+        Err(_) => Outcome::Source,
     }
+}
+
+enum Pick {
+    Draw(Rc<Layout>),
+    Source,
+    Unknown,
+}
+
+/// cache-only layout lookup: None = this variant was never tried
+fn peek_layout(text: &str, variant: usize) -> Option<Option<Rc<Layout>>> {
+    LAYOUTS.with(|c| {
+        c.borrow()
+            .get(text)
+            .filter(|e| e.tried[variant])
+            .map(|e| e.got[variant].clone())
+    })
 }
 
 #[cfg(test)]
@@ -135,20 +193,17 @@ fn height_rows(layout: &Layout) -> usize {
 fn cached_layout(text: &str, variant: usize) -> Option<Rc<Layout>> {
     // Option<Option<..>>: a memoized refusal must not look like a miss, or
     // an over-cap or insane graph re-runs the engine on every frame
-    let hit = LAYOUTS.with(|c| {
-        c.borrow()
-            .get(text)
-            .filter(|e| e.tried[variant])
-            .map(|e| e.got[variant].clone())
-    });
-    if let Some(hit) = hit {
-        return hit;
+    if let Some(decided) = peek_layout(text, variant) {
+        return decided;
     }
     let built = engine(text, variant).map(Rc::new);
     LAYOUTS.with(|c| {
         let mut c = c.borrow_mut();
         if c.len() > CACHE_MAX {
-            c.clear(); // crude bound: one doc has a few dozen diagrams
+            // crude bound, and the layouts are tens of MB even at the cap;
+            // the pager's warm queue plus every width it has been drawn at
+            // must survive, or each resize re-runs the whole engine
+            c.clear();
         }
         let e = c.entry(text.to_string()).or_default();
         e.tried[variant] = true;

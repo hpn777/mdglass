@@ -9,7 +9,7 @@
 //! illegible ones must keep refusing. `MDGLASS_BOXART_DUMP=/dir` writes each
 //! fixture's art for eyeballing.
 
-use super::{clear_cache, frame_riders, run_along, terminal_ascii, MAX_ROWS};
+use super::{clear_cache, frame_riders, probe, run_along, terminal_ascii, Outcome, MAX_ROWS};
 use crate::ansi::visible_width;
 
 // NB: one edge per line on purpose: the crate's parser mis-tokenizes chained
@@ -242,4 +242,25 @@ fn dump_fixtures_for_eyeballing() {
         };
         std::fs::write(format!("{dir}/{name}.txt"), body).unwrap();
     }
+}
+
+#[test]
+fn probe_never_runs_the_engine_and_agrees_with_full() {
+    clear_cache();
+    assert!(matches!(probe(CLEAN_TD, 140, false), Outcome::Unknown), "must not decide before warm");
+    let art = terminal_ascii(CLEAN_TD, 140, false).expect("must render");
+    assert_eq!(probe(CLEAN_TD, 140, false), Outcome::Art(art.clone()));
+    // refusals are decisions too: probed after a warm, they say Source and
+    // keep the pager from re-queuing them forever
+    clear_cache();
+    assert!(matches!(probe("not a diagram at all", 140, false), Outcome::Unknown));
+    assert_eq!(terminal_ascii("not a diagram at all", 140, false), None);
+    assert_eq!(probe("not a diagram at all", 140, false), Outcome::Source);
+    // width-specific: a layout cached as too-wide still needs the compact
+    // variant, so the narrow probe stays Unknown until drawn at that width
+    clear_cache();
+    assert!(terminal_ascii(CLEAN_TD, 400, false).is_some());
+    assert!(matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown | Outcome::Source));
+    let _ = terminal_ascii(CLEAN_TD, 48, false);
+    assert!(!matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown), "must converge");
 }

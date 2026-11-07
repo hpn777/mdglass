@@ -33,6 +33,25 @@ fn mermaid_fences_become_box_art_when_diagrams_on() {
 }
 
 #[test]
+fn probe_only_mode_waits_for_warm_then_draws() {
+    crate::boxart::clear_cache();
+    let cfg = Cfg { diagrams: true, art_probe_only: true, ..cfg_color() };
+    // cold cache: the pager frame must not wait on the engine -> source
+    let all = strip_ansi(&render(MMD, &cfg).join("\n"));
+    assert!(all.contains("graph"), "probe mode blocked on the engine");
+    assert!(!all.contains('\u{25ba}'), "probe mode ran the engine");
+    // the idle warm tick fills the cache; the next probe-only frame has art
+    crate::boxart::terminal_ascii("graph LR\n A[alpha] --> B[omega]", 80, false);
+    let all = strip_ansi(&render(MMD, &cfg).join("\n"));
+    assert!(all.contains('\u{25ba}') && all.contains("alpha"), "warm art did not appear");
+    // plain art is fenced as text, not as (invalid) mermaid
+    let cfg = Cfg { diagrams: true, ..cfg_plain() };
+    let all = render(MMD, &cfg).join("\n");
+    assert!(all.contains("```text mermaid"), "plain art must not masquerade as mermaid");
+    assert!(!all.contains("```mermaid\n+"), "plain art fenced as mermaid");
+}
+
+#[test]
 fn diagrams_on_falls_back_and_ignores_strangers() {
     let cfg = Cfg { diagrams: true, ..cfg_color() };
     // broken mermaid keeps its source rows (boxart refuses -> None)
