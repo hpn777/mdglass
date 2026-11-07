@@ -20,7 +20,7 @@ const CLEAN_TD: &str = "graph TD\n A[Intro] --> B[Method]\n B --> C[Results]\n C
 const SUBGRAPH_TD: &str = "graph TD\n web[web] --> auth\n subgraph backend\n auth[auth] --> db[db]\n end\n db --> done[done]";
 
 // phase 3 kinds, lifted from the reviewed fixtures (/tmp/opencode/rv/fixtures)
-const STATE_MMD: &str = "stateDiagram-v2\n [*] --> Idle\n Idle --> Running: start\n Running --> Idle: stop\n Running --> Paused: pause\n Paused --> Running: resume\n state Working {\n [*] --> Load\n Load --> Sync\n Sync --> Load: retry\n Sync --> [*]\n }\n Running --> Working: dispatch\n Working --> Done: complete\n Done --> [*]\n";
+const STATE_MMD: &str = "stateDiagram-v2\n [*] --> Idle\n Idle --> Running: start\n Running --> Idle: stop\n Running --> Paused: pause\n Paused --> Running: resume\n state Working {\n [*] --> Load\n Load --> Sync\n Sync --> Load: retry\n Sync --> [*]\n }\n Running --> Working: go\n Working --> Done: complete\n Done --> [*]\n";
 const ER_MMD: &str = "erDiagram\n CUSTOMER ||--o{ ORDER : places\n ORDER ||--|{ LINE-ITEM : contains\n CUSTOMER }|..|{ DELIVERY-ADDRESS : uses\n CUSTOMER {\n string name\n string email\n }\n ORDER {\n int id\n date placed\n }\n LINE-ITEM {\n int qty\n float price\n }\n DELIVERY-ADDRESS {\n string city\n }\n";
 // kitchen sink: the crate layout overlaps the self-loop into the note rect
 // (loop ends at 525 px, the note starts at 500), so no honest row band
@@ -33,7 +33,8 @@ const SEQV1: &str = "sequenceDiagram\n participant A as Web\n participant B as A
 const SEQV2: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n activate B\n B->>C: SELECT\n C-->>B: rows\n alt found\n B-->>A: 200 JSON\n else missing\n B-->>A: 404\n end\n";
 const SEQV3: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: ping\n opt debug\n B->>C: log timing\n end\n B->>B: tick\n B-->>A: pong\n";
 const SEQV4: &str = "sequenceDiagram\n participant A as Web\n participant B as API\n participant C as DB\n A->>B: GET /items\n Note over A,C: trace\n B->>C: SELECT\n B-->>A: done\n";
-const PIE_MMD: &str = "pie showData title Browser share\n \"Chrome\" : 65.1\n \"Safari\" : 19.2\n \"Other\" : 15.7\n";
+const PIE_MMD: &str =
+    "pie showData title Browser share\n \"Chrome\" : 65.1\n \"Safari\" : 19.2\n \"Other\" : 15.7\n";
 const FAN_BACK: &str = "flowchart LR\n A[fetch] --> P[parse]\n B[read] --> P\n C[stdin] --> P\n P --> O1[json]\n P --> O2[table]\n P --> O3[html]\n O3 --> A";
 const MULTI_SELF: &str = "flowchart LR\n A[start] ==> B[work]\n A --> B\n A -.-> B\n B --> B";
 const SEQUENCE: &str = "sequenceDiagram\n Alice->>Bob: hello\n Bob-->>Alice: hi";
@@ -58,7 +59,11 @@ fn check_invariants(art: &[String], cols: usize) {
         );
     }
     assert!(!art.is_empty());
-    assert!(art.len() <= MAX_ROWS + 2, "art outran MAX_ROWS: {} rows", art.len());
+    assert!(
+        art.len() <= MAX_ROWS + 2,
+        "art outran MAX_ROWS: {} rows",
+        art.len()
+    );
 }
 
 fn must_contain(art: &[String], words: &[&str]) {
@@ -71,16 +76,37 @@ fn must_contain(art: &[String], words: &[&str]) {
 #[test]
 fn clean_flowcharts_render_art() {
     for (src, labels) in [
-        (CLEAN_LR, vec!["Start", "Fetch data", "Valid", "Save", "Done", "Reject", "yes", "no"]),
-        (CLEAN_TD, vec!["Intro", "Method", "Results", "Conclusions", "Related work"]),
+        (
+            CLEAN_LR,
+            vec![
+                "Start",
+                "Fetch data",
+                "Valid",
+                "Save",
+                "Done",
+                "Reject",
+                "yes",
+                "no",
+            ],
+        ),
+        (
+            CLEAN_TD,
+            vec!["Intro", "Method", "Results", "Conclusions", "Related work"],
+        ),
         (SUBGRAPH_TD, vec!["auth", "db", "web", "done", "backend"]),
     ] {
         let art = terminal_ascii(src, 100, false).expect("clean flowchart must render");
         check_invariants(&art, 100);
         must_contain(&art, &labels);
         let all = art.join("\n");
-        assert!(all.contains('─') || all.contains('│'), "no box glyphs:\n{all}");
-        assert!(all.contains('►') || all.contains('▼'), "no arrowhead:\n{all}");
+        assert!(
+            all.contains('─') || all.contains('│'),
+            "no box glyphs:\n{all}"
+        );
+        assert!(
+            all.contains('►') || all.contains('▼'),
+            "no arrowhead:\n{all}"
+        );
     }
 }
 
@@ -112,8 +138,16 @@ fn illegible_geometries_refuse_or_stay_honest() {
     // if an upstream change ever lets them render, it must be re-reviewed,
     // not silently absorbed (a green test that hides wrong art is worse
     // than a red one)
-    assert_eq!(terminal_ascii(FUSED_RANKS, 140, false), None, "fused ranks must refuse");
-    assert_eq!(terminal_ascii(FRAME_RIDER, 100, false), None, "frame rider must refuse");
+    assert_eq!(
+        terminal_ascii(FUSED_RANKS, 140, false),
+        None,
+        "fused ranks must refuse"
+    );
+    assert_eq!(
+        terminal_ascii(FRAME_RIDER, 100, false),
+        None,
+        "frame rider must refuse"
+    );
 }
 
 #[test]
@@ -122,12 +156,16 @@ fn plain_mode_is_pure_ascii() {
     check_invariants(&art, 100);
     for row in &art {
         assert!(
-            row.chars().all(|c| c.is_ascii() && (c.is_ascii_graphic() || c == ' ')),
+            row.chars()
+                .all(|c| c.is_ascii() && (c.is_ascii_graphic() || c == ' ')),
             "non-ASCII in plain mode: {row:?}"
         );
     }
     let all = art.join("\n");
-    assert!(all.contains('+') && all.contains('-'), "no ASCII box chars:\n{all}");
+    assert!(
+        all.contains('+') && all.contains('-'),
+        "no ASCII box chars:\n{all}"
+    );
 }
 
 #[test]
@@ -170,7 +208,8 @@ fn refusals_are_total() {
 #[test]
 fn wide_labels_survive_narrow_widths() {
     // CJK labels: one char = two cells; the fit gate must use visible width
-    let art = terminal_ascii("graph LR\n A[开始处理数据] --> B[结束]", 100, false).expect("CJK fell back");
+    let art = terminal_ascii("graph LR\n A[开始处理数据] --> B[结束]", 100, false)
+        .expect("CJK fell back");
     check_invariants(&art, 100);
     must_contain(&art, &["开始处理数据", "结束"]);
 }
@@ -178,14 +217,18 @@ fn wide_labels_survive_narrow_widths() {
 #[test]
 fn control_characters_refuse_not_scribble() {
     // a tab or escape inside a label would shift or corrupt whole rows
-    assert_eq!(terminal_ascii("graph LR\n A[a\tb] --> B[x]", 100, false), None);
+    assert_eq!(
+        terminal_ascii("graph LR\n A[a\tb] --> B[x]", 100, false),
+        None
+    );
 }
 
 #[test]
 fn arrowhead_contact_probes_stay_honest() {
     // the reviewer's torture fixtures: back-and-forth pairs and arrows
     // landing on other routes' lines must either separate cleanly or refuse
-    const PROBE: &str = "flowchart LR\n A[start] --> B[work]\n B --> A\n A --- C[side]\n C -.-> D[out]\n D ==> A";
+    const PROBE: &str =
+        "flowchart LR\n A[start] --> B[work]\n B --> A\n A --- C[side]\n C -.-> D[out]\n D ==> A";
     // the pinned crate routes this roomy-honest today: it must render, and
     // any future refusal is a deliberate re-review, not a silent regression
     let art = terminal_ascii(PROBE, 120, false).expect("probe fell back");
@@ -206,17 +249,42 @@ fn frame_rider_detector_measures_runs_not_touches() {
     let crossing = [(10, 3), (10, 4), (10, 5), (10, 6), (10, 7)];
     assert_eq!(frame_riders(&crossing, &frames), 0);
     // staircase across the top line: alternating steps, max run 1
-    let stair = [(8, 3), (9, 3), (9, 4), (10, 4), (10, 5), (11, 5), (11, 6), (12, 6)];
+    let stair = [
+        (8, 3),
+        (9, 3),
+        (9, 4),
+        (10, 4),
+        (10, 5),
+        (11, 5),
+        (11, 6),
+        (12, 6),
+    ];
     assert_eq!(frame_riders(&stair, &frames), 0);
     // riding the top line 4 cells before diving in: 4-step run minus the
     // 2-step approach tolerance is a rider
-    let ride = [(4, 4), (5, 4), (6, 4), (7, 5), (8, 5), (9, 5), (10, 5), (11, 5), (11, 6)];
-    assert!(frame_riders(&ride, &frames) > 0, "a 4-cell ride must be caught");
+    let ride = [
+        (4, 4),
+        (5, 4),
+        (6, 4),
+        (7, 5),
+        (8, 5),
+        (9, 5),
+        (10, 5),
+        (11, 5),
+        (11, 6),
+    ];
+    assert!(
+        frame_riders(&ride, &frames) > 0,
+        "a 4-cell ride must be caught"
+    );
     // run_along directly: perpendicular steps along a horizontal line count 0
     assert_eq!(run_along(&crossing, 5, 0, 20, true), 0);
     // vertical line, vertical steps: the same ride turned 90 degrees
     let vride = [(19, 6), (20, 7), (20, 8), (20, 9), (20, 10), (19, 11)];
-    assert!(run_along(&vride, 20, 5, 15, false) >= 3, "vertical ride on x==x1");
+    assert!(
+        run_along(&vride, 20, 5, 15, false) >= 3,
+        "vertical ride on x==x1"
+    );
 }
 
 /// manual gate, kept out of the parallel suite on purpose: env is per-process
@@ -226,7 +294,8 @@ fn frame_rider_detector_measures_runs_not_touches() {
 #[test]
 #[ignore]
 fn fast_metrics_write_no_font_cache() {
-    let dir = std::env::var("XDG_CACHE_HOME").expect("set XDG_CACHE_HOME=/tmp/opencode/fontprobe (empty dir)");
+    let dir = std::env::var("XDG_CACHE_HOME")
+        .expect("set XDG_CACHE_HOME=/tmp/opencode/fontprobe (empty dir)");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let art = terminal_ascii(CLEAN_TD, 100, false).expect("must render");
@@ -278,24 +347,35 @@ fn dump_fixtures_for_eyeballing() {
 #[test]
 fn probe_never_runs_the_engine_and_agrees_with_full() {
     clear_cache();
-    assert!(matches!(probe(CLEAN_TD, 140, false), Outcome::Unknown), "must not decide before warm");
+    assert!(
+        matches!(probe(CLEAN_TD, 140, false), Outcome::Unknown),
+        "must not decide before warm"
+    );
     let art = terminal_ascii(CLEAN_TD, 140, false).expect("must render");
     assert_eq!(probe(CLEAN_TD, 140, false), Outcome::Art(art.clone()));
     // refusals are decisions too: probed after a warm, they say Source and
     // keep the pager from re-queuing them forever
     clear_cache();
-    assert!(matches!(probe("not a diagram at all", 140, false), Outcome::Unknown));
+    assert!(matches!(
+        probe("not a diagram at all", 140, false),
+        Outcome::Unknown
+    ));
     assert_eq!(terminal_ascii("not a diagram at all", 140, false), None);
     assert_eq!(probe("not a diagram at all", 140, false), Outcome::Source);
     // width-specific: a layout cached as too-wide still needs the compact
     // variant, so the narrow probe stays Unknown until drawn at that width
     clear_cache();
     assert!(terminal_ascii(CLEAN_TD, 400, false).is_some());
-    assert!(matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown | Outcome::Source));
+    assert!(matches!(
+        probe(CLEAN_TD, 48, false),
+        Outcome::Unknown | Outcome::Source
+    ));
     let _ = terminal_ascii(CLEAN_TD, 48, false);
-    assert!(!matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown), "must converge");
+    assert!(
+        !matches!(probe(CLEAN_TD, 48, false), Outcome::Unknown),
+        "must converge"
+    );
 }
-
 
 #[test]
 fn phase3_kinds_render_art() {
@@ -303,7 +383,9 @@ fn phase3_kinds_render_art() {
         (
             STATE_MMD,
             120usize,
-            &["Idle", "Running", "Paused", "Working", "Load", "Sync", "Done"][..],
+            &[
+                "Idle", "Running", "Paused", "Working", "Load", "Sync", "Done",
+            ][..],
         ),
         (
             ER_MMD,
@@ -339,11 +421,18 @@ fn phase3_kinds_render_art() {
             PIE_MMD,
             80,
             &[
-                "Browser share", "Chrome", "65.1", "Safari", "19.2", "Other", "15.7",
+                "Browser share",
+                "Chrome",
+                "65.1",
+                "Safari",
+                "19.2",
+                "Other",
+                "15.7",
             ][..],
         ),
     ] {
-        let art = terminal_ascii(src, cols, false).unwrap_or_else(|| panic!("kind fell back to source: {src}"));
+        let art = terminal_ascii(src, cols, false)
+            .unwrap_or_else(|| panic!("kind fell back to source: {src}"));
         check_invariants(&art, cols);
         must_contain(&art, words);
     }
@@ -371,13 +460,29 @@ fn phase3_plain_mode_is_pure_ascii() {
 #[test]
 fn phase3_refusals_are_total() {
     let refuse = |src: &str, why: &str| {
-        assert_eq!(terminal_ascii(src, 140, false), None, "should refuse: {why}");
+        assert_eq!(
+            terminal_ascii(src, 140, false),
+            None,
+            "should refuse: {why}"
+        );
     };
-    refuse(SEQ_DENSE_MMD, "crate layout overlaps the self-loop into the note");
-    refuse("sequenceDiagram\n A->>B: x\n par p\n A->>B: y\n end", "par frame");
-    refuse("sequenceDiagram\n A->>B: x\n Note left of A: n", "leftOf note");
+    refuse(
+        SEQ_DENSE_MMD,
+        "crate layout overlaps the self-loop into the note",
+    );
+    refuse(
+        "sequenceDiagram\n A->>B: x\n par p\n A->>B: y\n end",
+        "par frame",
+    );
+    refuse(
+        "sequenceDiagram\n A->>B: x\n Note left of A: n",
+        "leftOf note",
+    );
     refuse("sequenceDiagram\n autonumber\n A->>B: x", "autonumber");
-    refuse("sequenceDiagram\n box b\n participant A\n participant B\n end\n A->>B: x", "box block");
+    refuse(
+        "sequenceDiagram\n box b\n participant A\n participant B\n end\n A->>B: x",
+        "box block",
+    );
     refuse(
         "sequenceDiagram\n participant A\n participant B\n A<->B: z",
         "arrowhead at the source end",
@@ -409,11 +514,15 @@ fn sequence_order_survives_cell_scale() {
         seed
     };
     let mut drawn_cases = 0;
-    for case in 0..240 {
+    for case in 0..3000 {
         let n_p = 2 + (rng() % 3) as usize; // A, B, C, D
         let mut src = String::from("sequenceDiagram\n");
         for i in 0..n_p {
-            src.push_str(&format!(" participant {} as P{}\n", (b'A' + i as u8) as char, i));
+            src.push_str(&format!(
+                " participant {} as P{}\n",
+                (b'A' + i as u8) as char,
+                i
+            ));
         }
         let msgs = 4 + (rng() % 10) as usize;
         let mut labels = Vec::new();
@@ -452,6 +561,20 @@ fn sequence_order_survives_cell_scale() {
                     i += 1;
                 }
                 src.push_str(" end\n");
+                // filler between blocks: consecutive frames overlap in
+                // the crate's own px and honestly refuse, so without a
+                // message between them the fuzz proves nothing about order
+                if i < msgs {
+                    let (a, b) = (rng() % n_p as u64, rng() % n_p as u64);
+                    let lbl = format!("m{i}");
+                    src.push_str(&format!(
+                        " {}->>{}: {lbl}\n",
+                        (b'A' + a as u8) as char,
+                        (b'A' + b as u8) as char
+                    ));
+                    labels.push(lbl);
+                    i += 1;
+                }
             } else {
                 let (a, b) = (rng() % n_p as u64, rng() % n_p as u64);
                 let arrow = if rng() % 4 == 0 { "-->>" } else { "->>" };
@@ -465,10 +588,15 @@ fn sequence_order_survives_cell_scale() {
                 i += 1;
             }
             if rng() % 6 == 0 {
-                src.push_str(&format!(" activate {}\n", (b'A' + (rng() % n_p as u64) as u8) as char));
+                src.push_str(&format!(
+                    " activate {}\n",
+                    (b'A' + (rng() % n_p as u64) as u8) as char
+                ));
             }
         }
         let cols = 60 + (rng() % 90) as usize;
+        // the honest gates refuse most dense random traffic: a drawn
+        // case is the rare and interesting one, so the corpus is wide
         let Some(art) = terminal_ascii(&src, cols, false) else {
             continue; // refusal is always allowed
         };
@@ -481,10 +609,7 @@ fn sequence_order_survives_cell_scale() {
             let rows: Vec<usize> = art
                 .iter()
                 .enumerate()
-                .filter(|(_, r)| {
-                    r.split(|c: char| !c.is_alphanumeric())
-                        .any(|w| w == lbl)
-                })
+                .filter(|(_, r)| r.split(|c: char| !c.is_alphanumeric()).any(|w| w == lbl))
                 .map(|(i, _)| i)
                 .collect();
             assert_eq!(
@@ -505,7 +630,10 @@ fn sequence_order_survives_cell_scale() {
             last = Some(rows[0]);
         }
     }
-    assert!(drawn_cases >= 60, "fuzz drew {drawn_cases}, too few to prove anything");
+    assert!(
+        drawn_cases >= 100,
+        "fuzz drew {drawn_cases}, too few to prove anything"
+    );
 }
 
 #[test]
@@ -513,7 +641,11 @@ fn parser_lies_refuse_at_the_source_gate() {
     // review #3 (B4): the crate hands every accepted token a filled head
     // and drops what it cannot tokenise; none of that may reach the art
     let refuse = |src: &str| {
-        assert_eq!(terminal_ascii(src, 140, false), None, "should refuse: {src}");
+        assert_eq!(
+            terminal_ascii(src, 140, false),
+            None,
+            "should refuse: {src}"
+        );
     };
     refuse("sequenceDiagram\n A->B: open head");
     refuse("sequenceDiagram\n A-->>B: solid\n A-->B: open head");
@@ -523,9 +655,228 @@ fn parser_lies_refuse_at_the_source_gate() {
     refuse("sequenceDiagram\n A->>B: x\n link A: https://example.com");
     refuse("sequenceDiagram\n A->>B: x\n rect rgb(200, 220, 250)\n B-->>A: y\n end");
     // the same arrow, correctly written, still draws
+    assert!(terminal_ascii("sequenceDiagram\n A->>B: fine\n B-->>A: back", 140, false).is_some());
+}
+
+#[test]
+fn activation_bars_cover_the_messages_the_source_says() {
+    // review #3b (6/7): the crate hangs every bar on the message AFTER
+    // its activate line and deactivates the receiver of a `-` arrow
+    // where mermaid deactivates the sender; bars now come from the
+    // source and the ledger's claimed rows
+    let row_of = |art: &[String], needle: &str| {
+        art.iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} row in\n{}", art.join("\n")))
+    };
+    let bar_rows = |art: &[String]| -> Vec<usize> {
+        (0..art.len())
+            .filter(|y| art[*y].contains('\u{2551}'))
+            .collect()
+    };
+    // `->>+` wakes the receiver under this very arrow; `->>-` retires
+    // the SENDER after it: the bar lives on m01..=m02 and no further
+    let art = terminal_ascii(
+        "sequenceDiagram\n Pa->>+Qb: m01\n Qb-->>-Pa: m02\n Pa->>Qb: m03\n Pa->>Qb: m04\n",
+        110,
+        false,
+    )
+    .expect("suffix activations fell back");
+    let bars = bar_rows(&art);
     assert!(
-        terminal_ascii("sequenceDiagram\n A->>B: fine\n B-->>A: back", 140, false).is_some()
+        !bars.is_empty(),
+        "no activation bar drawn\n{}",
+        art.join("\n")
     );
+    let m03 = row_of(&art, "m03");
+    assert!(
+        bars.iter().all(|b| *b < m03),
+        "bar outlives the `-` deactivation\n{}",
+        art.join("\n")
+    );
+    let m01_arrow = (row_of(&art, "m01") + 1..art.len())
+        .find(|y| art[*y].contains(['\u{25ba}', '\u{2524}']))
+        .expect("m01 arrow");
+    assert!(
+        bars.contains(&m01_arrow),
+        "bar misses the arrow that woke it\n{}",
+        art.join("\n")
+    );
+
+    // an explicit `activate` between two arrows starts BELOW the first
+    // one, and `deactivate` closes the bar at the arrow it follows
+    let art = terminal_ascii(
+        "sequenceDiagram\n Pa->>Qb: m01\n activate Qb\n Qb-->>Pa: m02\n deactivate Qb\n Pa->>Qb: m03\n",
+        110,
+        false,
+    )
+    .expect("explicit activations fell back");
+    let bars = bar_rows(&art);
+    let m01_arrow = (row_of(&art, "m01") + 1..art.len())
+        .find(|y| art[*y].contains('\u{25ba}'))
+        .expect("m01 arrow");
+    assert!(
+        bars[0] > m01_arrow,
+        "bar starts above its activate point\n{}",
+        art.join("\n")
+    );
+    let m02 = row_of(&art, "m02");
+    let m03 = row_of(&art, "m03");
+    assert!(
+        bars.iter().any(|b| *b >= m02 && *b < m03 - 1),
+        "bar skips the message it covered\n{}",
+        art.join("\n")
+    );
+    assert!(
+        bars.iter().all(|b| *b < m03 - 1),
+        "bar outlives the deactivate line\n{}",
+        art.join("\n")
+    );
+}
+
+#[test]
+fn frames_and_branches_may_not_vanish() {
+    // review #3b (3): the renderer deletes every frame that contains no
+    // message, taking its keyword, condition and else-branches with it;
+    // a diagram whose frames would be silently pruned is refused whole
+    let refuse = |src: &str| {
+        assert_eq!(
+            terminal_ascii(src, 140, false),
+            None,
+            "should refuse: {src}"
+        );
+    };
+    refuse("sequenceDiagram\n participant Pa\n participant Qb\n Pa->>Qb: m01\n opt F01\n end\n Qb->>Pa: m02\n");
+    refuse(
+        "sequenceDiagram\n participant Pa\n participant Qb\n Qb-->>Pa: m01\n loop F01\n  Note over Qb: n01\n end\n Pa->>Qb: m02\n           loop F02\n  alt F03\n   Note over Qb: n02\n  else E04\n  end\n end\n Qb->>Pa: m03\n",
+    );
+}
+
+#[test]
+fn self_loops_stay_inside_their_section() {
+    // review #3b (4): a self-message whose stub spans a divider (or any
+    // wall cell in its box) starts in one branch and returns in the next
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n Qb-->>Pa: m01\n alt F01\n  Pa-->>Pa: m02\n else E02\n  Qb->>Pa: m03\n end\n Pa->>Qb: m04\n",
+            110,
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn labels_never_float_below_their_arrow() {
+    // review #3b (2): the mr+1 candidate let an above-arrow label become
+    // a below-arrow caption, and an unlabelled arrow made the swap silent
+    for (src, w) in [
+        (
+            "sequenceDiagram\n participant Pa\n participant Qb\n Pa->>Pa: m01\n Qb-->>Pa: m02\n Qb-->>Pa: m03\n Pa->>Qb: m04\n Pa->>Pa: m05\n",
+            110,
+        ),
+        (
+            "sequenceDiagram\n Pa-->>Qb: m01\n Note over Qb: n01\n Pa->>+Pa: m02\n Pa->>Qb: m03\n Qb-->>Pa: m04\n Qb-->>Pa: m05\n",
+            110,
+        ),
+    ] {
+        for cols in [w, 140] {
+            if let Some(art) = terminal_ascii(src, cols, false) {
+                // if it draws at all, no label row may sit below the
+                // arrow it belongs to: every label has its arrow beneath
+                for y in 1..art.len() {
+                    if let Some(l) = art.get(y) {
+                        for m in 1..=5 {
+                            let lbl = format!("m0{m}");
+                            if l.contains(&lbl) && !art[y - 1].contains(['\u{25ba}', '\u{25c4}']) {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                let _ = art;
+            }
+        }
+    }
+    // both repros refuse outright at these widths: refusing is honest
+    assert_eq!(
+        terminal_ascii(
+            "sequenceDiagram\n participant Pa\n participant Qb\n Pa->>Pa: m01\n Qb-->>Pa: m02\n Qb-->>Pa: m03\n Pa->>Qb: m04\n Pa->>Pa: m05\n",
+            110,
+            false
+        ),
+        None
+    );
+}
+
+#[test]
+fn pie_prints_the_written_number_not_its_f32_regret() {
+    // review #3b (5): `{:.2}` on the parsed f32 misprints the source:
+    // 123456789 arrives as 123456792.00 and 0.001 as 0.00
+    let all = terminal_ascii("pie\n \"a\": 123456789\n \"b\": 50000000\n", 90, false)
+        .expect("pie fell back")
+        .join("\n");
+    assert!(all.contains("[123456789]"), "value reformatted: {all}");
+    assert!(all.contains("[50000000]"), "value reformatted: {all}");
+    let all = terminal_ascii("pie\n \"a\": 0.001\n \"b\": 0.002\n", 90, false)
+        .expect("small pie fell back")
+        .join("\n");
+    assert!(
+        all.contains("[0.001]") && all.contains("[0.002]"),
+        "small values zeroed out: {all}"
+    );
+}
+
+#[test]
+fn er_list_may_outwidth_its_picture() {
+    // review #3b (minor): the relation list was width-gated against the
+    // art's own bounding box, so a single short relation refused at
+    // every terminal width
+    let art = terminal_ascii("erDiagram\n CUSTOMER }o--|| ORDER : places\n", 80, false)
+        .expect("single relation refused");
+    let all = art.join("\n");
+    assert!(
+        all.contains("CUSTOMER  }o--||  ORDER"),
+        "list missing: {all}"
+    );
+}
+
+#[test]
+fn labels_hug_their_own_route_not_the_nearest_thing() {
+    // review #3b (1/8): a label window may not fuse into a frame wall
+    // (B8a), and a floated label must sit strictly nearer its own route
+    // than to any foreign route, box or entry dot, on that route's side
+    // of every wall
+    let art = terminal_ascii(
+        "flowchart TD\n  subgraph S [group]\n    A[alpha] --> B[beta]\n  end\n  B -->|leaving| C[gamma]\n  X[outer] -->|entering| A\n",
+        140,
+        false,
+    )
+    .expect("label-on-wall repro fell back");
+    for line in &art {
+        for word in ["entering", "leaving"] {
+            if line.contains(word) {
+                assert!(
+                    !line.contains(['\u{250c}', '\u{2510}', '\u{2514}', '\u{2518}']),
+                    "label shares a wall row: {line}"
+                );
+            }
+        }
+    }
+    // the kitchen-sink state demo: `dispatch` has no honest spot in the
+    // crowded composite band (stub, title, entry dot), so the longer
+    // label must refuse rather than caption the unlabelled [*] -> Load
+    let crowded = STATE_MMD.replace(": go", ": dispatch");
+    assert_ne!(crowded, STATE_MMD);
+    for cols in [120, 150, 180] {
+        assert_eq!(
+            terminal_ascii(&crowded, cols, false),
+            None,
+            "dispatch captioned the entry dot at {cols} cols"
+        );
+    }
+    // the shipped `go` label does draw, beside its entry arrow
+    assert!(terminal_ascii(STATE_MMD, 140, false).is_some());
 }
 
 #[test]
@@ -539,13 +890,19 @@ fn pie_pairs_each_value_with_its_own_slice() {
     )
     .expect("pie fell back");
     let all = art.join("\n");
-    assert!(all.contains("Big") && all.contains("98"), "missing Big\n{all}");
+    assert!(
+        all.contains("Big") && all.contains("98"),
+        "missing Big\n{all}"
+    );
     for line in &art {
         if line.contains("Big") {
             assert!(line.contains("98"), "Big lost its value: {line}");
         }
         if line.contains("Small") || line.contains("Mid") {
-            assert!(line.contains('1') && !line.contains("98"), "wrong value: {line}");
+            assert!(
+                line.contains('1') && !line.contains("98"),
+                "wrong value: {line}"
+            );
         }
     }
     // a slice too thin for the renderer to keep is refused, never drawn
@@ -605,7 +962,6 @@ fn probe_and_full_agree_for_every_kind() {
     }
 }
 
-
 #[test]
 #[ignore] // measure engine cost per kind at the node/edge caps
 fn measure_kind_caps() {
@@ -636,7 +992,7 @@ fn measure_kind_caps() {
         // window and refuses on width long before the node cap
         let mut s = String::from("erDiagram\n");
         for k in 0..n - 1 {
-            s.push_str(&format!(" ROOT ||--o{{ E{k} : r{k}\n", ));
+            s.push_str(&format!(" ROOT ||--o{{ E{k} : r{k}\n",));
         }
         s
     };

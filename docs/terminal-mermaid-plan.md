@@ -225,8 +225,12 @@ The layout does not depend on width; only rasterization does. Memoize
 - One `raster()` dispatcher routes every admitted kind: Flowchart/State/Er
   share `graph_raster` (kind gates inside), Sequence gets `sequence_raster`,
   Pie becomes `pie_list` — title plus `label  [value]  pct%` rows, read
-  from each slice itself; the raw value column keeps rounded shares
-  honest and the list matches `showData` output for every pie.
+  from each slice itself; the value prints as the SOURCE wrote it (the
+  first version reprinted the parsed f32 with `{:.2}`, so `123456789`
+  arrived as `123456792.00` and `0.001` as `0.00` — review #3b, 5), the
+  share is computed alongside, and the list matches `showData` output for
+  every pie. Rows follow slice order (sorted by value, like the chart),
+  not source order.
 - State: `[*]` start/end pseudo-states draw as one dot (● start, ◉ end;
   plain `o`/`@`) — a 16 px circle has no honest box reading at cell scale.
   Their footprint is the single cell, which slides a small spiral outward
@@ -254,14 +258,30 @@ The layout does not depend on width; only rasterization does. Memoize
   snap to the *claimed* wall/divider row, may punch their own wall between
   the corners but never run over one — a wide section name needs a wide
   frame (B2); keyword and section share one pentagon ("opt [debug]").
-  Activation bars draw one column right of the lane (a 10 px bar has no
-  honest reading ON the lane and overwriting `│` with `║` was rejected in
-  review), under messages so arrows cross it as the SVG draws them; the
-  crate's activation boxes lag one message behind the SVG's own markers
-  and the art follows the layout, GUI identically. Alt/else/opt/loop
-  frames draw; two frames that overlap where neither strictly contains the
-  other (the crate stacks consecutive blocks' walls into one row) refuse
-  whole (B2). Only `Note over` draws — and only where a free band exists;
+  Activation bars draw one column right of the lane, but they come from
+  the SOURCE and the ledger's claimed rows, not from the crate's
+  activation boxes: those take the NEXT message's index (so every bar
+  covered the wrong messages) and apply a `->>-` arrow's deactivation to
+  the receiver where mermaid retires the SENDER (review #3b, 6/7). A
+  `->>+` arrow wakes the receiver under its own arrow row; an `activate`
+  line starts the bar below the arrow it follows; a deactivate closes it
+  at the arrow it follows; a never-closed bar runs to the foot box;
+  nested activations step one further right (depth > 2 refuses);
+  deactivating what nothing activated refuses. The bar hides behind
+  arrows, boxes and words (they out-rank it) and joins a crossed wall as
+  a junction, because both lines truly continue. A message label may
+  only sit ABOVE its arrow: below, an unlabelled neighbour makes the
+  caption swap silent and the fuzz proved readers take the bait (review
+  #3b, 2), so a label with no honest row above refuses the diagram. A
+  self-message's stub may not contain a wall or divider cell — a loop
+  starting under one section line and returning under the next lived in
+  two branches at once (review #3b, 4). Alt/else/opt/loop
+  frames draw; two frames that overlap where neither strictly contains
+  the other (the crate stacks consecutive blocks' walls into one row)
+  refuse whole (B2). The renderer deletes every frame that holds no
+  message (empty or notes-only), taking its keyword, condition and
+  else-branches with it, so the written frame and divider counts must
+  match the layout's or the diagram refuses (review #3b, 3). Only `Note over` draws — and only where a free band exists;
   autonumber, participant boxes, par/critical/break frames, leftOf/rightOf
   notes, source-end arrowheads and stick figures refuse whole.
 - `emit` now glyph-converts only cells with a routing mask: the sequence
@@ -274,20 +294,30 @@ The layout does not depend on width; only rasterization does. Memoize
   the diagram using the exact crow's-foot notation (`||--o{` etc.),
   mirrored per end — the start side reads `}o`/`}|`, the reverse-and-swap
   of the end side (review #3 B6) — because the notation cannot fit one
-  cell per glyph. Self-relations, empty relation lists (would draw boxes
+  cell per glyph. The list hangs under the picture, so it is width-gated
+  against the terminal, not the picture's own bounding box (the first
+  gate compared every relation to the art width and refused even a single
+  short relation at any window size, review #3b minor). Self-relations, empty relation lists (would draw boxes
   the source never related) and entity names carrying the list's own
   separators refuse.
 - Edge label placement learned to float: rows ±2 and columns ±4 from the
   anchor (SVG hangs labels loosely), preferring one column of air from
   neighbouring labels — falling back to touching rather than refusing.
-  Two review-#3 tightening passes: a label window may never cover a
-  subgraph frame wall cell (that opens a door the source never drew, B8a),
-  and the touching fallback may not fuse two ASCII words ("pausedispatch"
-  is not two labels; CJK contact stays legal, B8b). When every anchor
-  window is spoken for, the label floats beside the drawn route instead —
-  one step off the polyline still names its route, while a refusal drops
-  the whole diagram. Flowchart art is byte-identical under all of this
-  (dumps re-verified).
+  The window interior admits bare air and the label's own route only:
+  walls (the first B8a guard waved FRAME straight through its own
+  condition — a no-op, review #3b, 1), boxes, foreign routes and foreign
+  words all block. The touching fallback may not fuse two ASCII words
+  ("pausedispatch" is not two labels; CJK contact stays legal, B8b).
+  When every anchor window is spoken for, the label floats beside the
+  drawn route instead. Both passes share one attribution gate (review
+  #3b, 8): the window must sit STRICTLY nearer its own route than to any
+  foreign route cell, box or entry dot — a tie reads as belonging to
+  whichever mark the eye meets first — and some own route cell must
+  reach it without crossing a frame wall, so a label can no longer float
+  across a boundary and caption the wrong arrow (or an unlabelled
+  `[*]`-dot beside it). Flowchart art is byte-identical under all of
+  this (dumps re-verified; labels fused into walls in the reviewer's
+  repros now move or refuse, and the shipped demos keep every wall).
 - Costs, measured on fixtures that actually DRAW (the earlier scratch set
   all refused and only ever measured the refusal path; rerun with
   `cargo test -- --ignored measure_kind_caps`, which grows each kind until
