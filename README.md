@@ -4,9 +4,9 @@ A fast, tiny Markdown viewer for Linux, for the terminal and the GNOME desktop.
 
 ![MD Glass showing a README](packaging/screenshots/main.png)
 
-- One small binary (~0.6 MB), no WebKit, no runtime to install
+- One small binary (~6 MB), no WebKit, no runtime to install
 - Terminal pager with search, or a native GNOME window (`--gui`)
-- Tables, task lists, quotes and highlighted code blocks
+- Tables, task lists, quotes, highlighted code blocks and diagrams
 - Find, zoom, and live reload when the file changes
 
 ## Install
@@ -40,13 +40,13 @@ In the window, use `Ctrl+F` to find, `Ctrl+O` to open, and `Ctrl++` / `Ctrl+-` t
 Prose wraps to the window; wide tables and diagrams keep their shape and scroll sideways.
 Those wraps are real line breaks, as in the terminal: find does not match a phrase split
 across two lines, copied text keeps the breaks, and resizing or zooming clears a selection.
-```` ```mermaid ```` blocks and untyped box-art blocks are drawn as diagrams: vector
-graphics in the window (in a palette that follows your light/dark setting), and honest
-ASCII box art in the terminal, where node names stay searchable text. The terminal
-draws flowcharts, state machines, ER models, sequence diagrams and pie charts; syntax
-it cannot draw truthfully stays code. Press `D` to flip
-between art and source, or start with `--no-diagrams`. Any diagram that cannot be drawn
-truthfully at your width stays a code block; piped output stays markdown source
+```` ```mermaid ```` blocks are drawn as diagrams: vector graphics in the window (in a
+palette that follows your light/dark setting), and honest ASCII box art in the terminal,
+where node names stay searchable text. Blocks that are untyped but look like box art are
+drawn as vectors in the window too. The terminal draws flowcharts, state machines, ER
+models, sequence diagrams and pie charts; anything it cannot draw truthfully at your
+width, or with syntax it does not fully cover, stays a code block. Press `D` to flip
+between art and source, or start with `--no-diagrams`. Piped output stays markdown source
 (unless `--color` forces art), so `mdglass file.md | grep` works.
 `examples/diagrams.md` demos every kind, with `examples/screenshots/` as proof.
 
