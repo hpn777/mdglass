@@ -1,3 +1,15 @@
+mdglass (0.1.0-9) unstable; urgency=medium
+
+  * The terminal pager draws ```mermaid blocks as box art: flowcharts,
+    state diagrams, ER models (with a Relationships list), sequence
+    diagrams and pie charts. On by default; `D` toggles art and source,
+    --no-diagrams starts with source, and piped output keeps the
+    markdown. A diagram that cannot be drawn truthfully at the terminal
+    width — or uses syntax the drawing cannot represent exactly — stays
+    a code block: the art never drops, invents or moves an element.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Sat, 07 Nov 2026 23:20:02 +0000
+
 mdglass (0.1.0-8) unstable; urgency=medium
 
   * Review-pass fixes: the changelog history truncated by two release
