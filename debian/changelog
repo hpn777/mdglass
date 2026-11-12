@@ -1,3 +1,12 @@
+mdglass (0.1.0-11) unstable; urgency=medium
+
+  * Refresh Flatpak's offline dependency manifest from Cargo.lock and include
+    a regeneration script to keep future dependency changes reproducible.
+  * Make the heading/table pagination regression fixture font-independent.
+  * Publish compatibility-built Linux assets requiring glibc 2.35 or newer.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Thu, 12 Nov 2026 11:00:00 +0000
+
 mdglass (0.1.0-10) unstable; urgency=medium
 
   * Native printing and GUI/headless PDF export share point-based pagination.

@@ -16,6 +16,8 @@ jobs:
             libgtk-4-bin libadwaita-1-0 fonts-dejavu-core desktop-file-utils appstream \
             libcairo2 libpango-1.0-0 libpangocairo-1.0-0 librsvg2-2 poppler-utils
       - uses: actions/checkout@v4
+      - name: Check offline Flatpak dependency manifest
+        run: python3 packaging/flatpak/update-cargo-sources.py --check
       - name: make check (unit, terminal, GUI, PDF and print callbacks)
         run: dbus-run-session -- make check
       - name: Validate desktop entries and metainfo

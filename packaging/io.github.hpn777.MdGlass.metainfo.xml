@@ -58,6 +58,12 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.1.0-11" date="2026-11-12">
+      <description>
+        <p>Printing and PDF export release with refreshed offline Flatpak dependencies
+        and portable pagination regression tests.</p>
+      </description>
+    </release>
     <release version="0.1.0-10" date="2026-11-12">
       <description>
         <p>Native printing and background PDF export with shared page-layout settings,

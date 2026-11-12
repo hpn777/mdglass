@@ -1698,16 +1698,47 @@ mod tests {
     #[test]
     fn native_first_ordinary_row_moves_with_pending_heading_intact() {
         let Ok(native) = Native::load() else { return };
-        let settings = Settings { paper: super::super::Paper::Letter, margin: 200.0,
+        let mut settings = Settings { paper: super::super::Paper::Letter, margin: 200.0,
             ..Settings::default() };
-        let source = format!("lead\n\n# Heading\n\n| Key |\n|---|\n| {} |", "WORD ".repeat(135));
+        let body = "WORD ".repeat(135);
+        let size = settings.font_size;
+        let width = settings.page_size().0 - 2.0 * settings.margin;
+        let header = native.text(&plain("Key"), size, true, false, Some(width - 2.0 * PAD)).unwrap();
+        let row = native.text(&plain(body.trim_end()), size, false, false, Some(width - 2.0 * PAD)).unwrap();
+        assert!(row.lines.len() > 1);
+        assert!(native.text(&plain(body.trim_end()), size, false, false, None).unwrap().width > width);
+        let slot = header.lines.iter().chain(&row.lines)
+            .fold(size * 1.3, |height, line| height.max(line.height));
+        let table_height = (header.lines.len() + row.lines.len()) as f64 * slot + 4.0 * PAD;
+        let heading_height = native.text(&plain("Heading"), size * 2.0, true, false, Some(width)).unwrap().height
+            + size * 2.0 * 0.4 + size * 0.5;
+        let lead_height = native.text(&plain("lead"), size, false, false, Some(width)).unwrap().height
+            + size * 0.4 + size * 0.5;
+        // Sans resolves to different fonts on different systems. Make the full
+        // group fit a fresh page, but not after the lead paragraph and blank.
+        // A fixed Letter height could instead require abandoning keep-with-next
+        // in order to preserve the ordinary row, which is valid behavior.
+        settings.page_size_override = Some((settings.page_size().0,
+            2.0 * settings.margin + heading_height + table_height + lead_height * 0.5));
+        let source = format!("lead\n\n# Heading\n\n| Key |\n|---|\n| {} |", body);
         let p = paginate(&source, &settings, &native).unwrap();
+        assert_eq!(p.pages.len(), 2, "fixture must require relocation");
+        assert_eq!(p.pages[0].items.len(), 1, "heading was left behind");
+        assert!(matches!(&p.pages[0].items[0], Item::Text { spans, .. }
+            if doc::spans_plain(spans) == "lead"));
         let pages_with_words: Vec<_> = p.pages.iter().filter(|page| page.items.iter().any(|item|
             matches!(item, Item::Text { spans, .. } if doc::spans_plain(spans).contains("WORD")))).collect();
         assert_eq!(pages_with_words.len(), 1, "ordinary row was split");
         let page = pages_with_words[0];
         assert!(page.items.iter().any(|item|
             matches!(item, Item::Text { spans, .. } if doc::spans_plain(spans) == "Heading")));
+        assert!(page.items.iter().any(|item|
+            matches!(item, Item::Text { spans, .. } if doc::spans_plain(spans) == "Key")));
+        for item in &page.items {
+            if let Item::Rect { y, height, .. } = item {
+                assert!(y + height <= page.height - settings.margin + 0.01);
+            }
+        }
         let words: String = page.items.iter().filter_map(|item| match item {
             Item::Text { spans, .. } => Some(doc::spans_plain(spans)), _ => None,
         }).collect();
