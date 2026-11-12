@@ -15,6 +15,42 @@ not a terminal it prints plain text wrapped to 80 columns instead. With no
 \fIFILE\fR, or when \fIFILE\fR is \fB\-\fR, it reads standard input.
 .SH OPTIONS
 .TP
+.B \-\-export-pdf PATH
+Export one Markdown document to a paginated PDF without opening a window.
+Requires system Cairo, Pango and PangoCairo libraries; vector diagrams also
+use librsvg. No display server, browser or external conversion program is
+required. An existing destination is replaced only after successful export.
+The input document cannot be used as the destination.
+.TP
+.B \-\-paper a4|a3|letter|legal
+PDF paper size (default a4).
+.TP
+.B \-\-landscape
+Use landscape PDF pages.
+.TP
+.B \-\-margin PT
+PDF margins in points (72 per inch), default 36.
+.TP
+.B \-\-font-size PT
+PDF body font size in points, default 10 (allowed range 4 to 72).
+.TP
+.B \-\-table-mode auto|fit|tile
+Wrap table cells and repeat headers on continuation pages. Auto (default)
+uses column bands for tables too wide to fit readably; tile explicitly uses
+column bands. Fit requires the table to fit the page width.
+Cells are not truncated. Box-drawing tables in code fences remain code.
+.TP
+.B \-\-diagram-mode auto|fit|tile
+Fit diagrams uniformly, or tile oversized diagrams with continuation labels.
+Auto is the default. Tile boundaries may cross diagram nodes or labels.
+Unsupported diagrams remain source; external renderers are never invoked.
+.TP
+.B \-\-overlap PT
+Diagram tile overlap in points, default 12.
+.TP
+.B \-\-no-repeat-first-column
+Do not repeat the first identifier column in horizontal table bands.
+.TP
 .BR \-g ", " \-\-gui
 Open a native GNOME preview window (GTK4 + libadwaita) instead of the pager.
 Requires the system libraries \fBlibgtk-4\fR and \fBlibadwaita-1\fR, which are
@@ -86,6 +122,13 @@ Toggle mermaid fences between box art and source code.
 .BR q ", " Esc
 Quit, or move on to the next file when several were given.
 .SH GUI ACTIONS
+.BR Ctrl+P
+Open the native print dialog. Print and PDF export share a page-layout engine;
+screen wrapping and zoom do not affect output. Export as PDF is also available
+from the window menu. Both actions offer page-layout settings. PDF export
+runs in the background on a document snapshot and can be cancelled; a native
+renderer call already in progress must finish before cancellation takes effect.
+.TP
 .BR Ctrl+O
 Open a file (also \fBAlt+Left/Right\fR for previous/next of the files given).
 .TP
@@ -109,7 +152,7 @@ When set, colors are disabled unless \fB\-\-color\fR is given.
 .B TERM
 When \fBdumb\fR, colors are disabled unless \fB\-\-color\fR is given.
 .SH EXIT STATUS
-0 on success, 1 if a file could not be read or the GUI could not start,
+0 on success, 1 if a file could not be read, output failed or the GUI could not start,
 2 on usage errors.
 .SH EXAMPLES
 .nf
@@ -118,4 +161,6 @@ mdglass a.md b.md
 curl \-s https://example.com/notes.md | mdglass
 mdglass notes.md | grep TODO
 mdglass --gui README.md          # native GNOME preview window
+mdglass --export-pdf notes.pdf notes.md
+mdglass --export-pdf wide.pdf --landscape --table-mode tile notes.md
 .fi

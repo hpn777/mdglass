@@ -1,3 +1,17 @@
+mdglass (0.1.0-10) unstable; urgency=medium
+
+  * Native printing and GUI/headless PDF export share point-based pagination.
+    Tables wrap without truncation, repeat headers and identifier columns,
+    and support horizontal bands and synchronized oversized-row fragments.
+  * Vector diagrams fit pages or tile with overlap and continuation labels.
+    GUI export runs in a cancellable background worker on a source snapshot.
+  * Protect input files and existing destinations, including redirected stdin;
+    audit native bindings, SVG resources, clipping and GUI callback lifetimes.
+  * Add PDF inspection, print/PDF equivalence, cancellation and concurrent GUI
+    regression tests. Reuse system graphics libraries without new Cargo deps.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Thu, 12 Nov 2026 10:49:55 +0000
+
 mdglass (0.1.0-9) unstable; urgency=medium
 
   * The terminal pager draws ```mermaid blocks as box art: flowcharts,

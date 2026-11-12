@@ -13,9 +13,10 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates git make cargo rustc dpkg-dev debhelper dbus \
             python3 python3-gi gir1.2-girepository-3.0 gir1.2-gtk-4.0 gir1.2-adw-1 \
-            libgtk-4-bin libadwaita-1-0 fonts-dejavu-core desktop-file-utils appstream
+            libgtk-4-bin libadwaita-1-0 fonts-dejavu-core desktop-file-utils appstream \
+            libcairo2 libpango-1.0-0 libpangocairo-1.0-0 librsvg2-2 poppler-utils
       - uses: actions/checkout@v4
-      - name: make check (unit, pty, GUI ABI audit, scripted GUI session)
+      - name: make check (unit, terminal, GUI, PDF and print callbacks)
         run: dbus-run-session -- make check
       - name: Validate desktop entries and metainfo
         run: |

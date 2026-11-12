@@ -12,7 +12,7 @@ Rules-Requires-Root: no
 Package: mdglass
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Recommends: libgtk-4-1, libadwaita-1-0
+Recommends: libgtk-4-1, libadwaita-1-0, libcairo2, libpango-1.0-0, libpangocairo-1.0-0, librsvg2-2, fonts-dejavu-core
 Description: fast markdown viewer: terminal pager and GNOME preview
  mdglass renders markdown in the terminal with colors, tables, highlighted
  code blocks and clickable links, in a built-in less-style pager with search;

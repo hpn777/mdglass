@@ -18,6 +18,7 @@
       <li>Zoom, and several files open at once</li>
       <li>Mermaid and box-art code blocks drawn as vector graphics, following the light/dark theme</li>
       <li>Live reload when the file changes on disk</li>
+      <li>Native printing and cancellable PDF export with paginated tables and vector diagrams</li>
       <li>A terminal pager mode with the same renderer</li>
     </ul>
   </description>
@@ -57,6 +58,12 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.1.0-10" date="2026-11-12">
+      <description>
+        <p>Native printing and background PDF export with shared page-layout settings,
+        repeating table headers, wide-table column bands and vector diagram tiling.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-05">
       <description>
         <p>First public release.</p>

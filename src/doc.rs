@@ -944,7 +944,7 @@ fn is_sep_row(t: &str) -> bool {
     if t.len() < 3 || !t.contains('|') {
         return false;
     }
-    let body = t.trim_start_matches('|').trim_end_matches('|');
+    let body = table_body(t);
     !body.is_empty()
         && body.split('|').all(|c| {
             let c = c.trim().trim_start_matches(':').trim_end_matches(':');
@@ -994,6 +994,17 @@ fn split_cells(t: &str) -> Vec<String> {
     cells
 }
 
+/// Remove one optional outer delimiter, not empty boundary cells. An escaped
+/// final pipe belongs to a cell, rather than being the table's closing edge.
+fn table_body(t: &str) -> &str {
+    let t = t.trim().strip_prefix('|').unwrap_or(t.trim());
+    if let Some(body) = t.strip_suffix('|') {
+        let slashes = body.bytes().rev().take_while(|&c| c == b'\\').count();
+        if slashes % 2 == 0 { return body; }
+    }
+    t
+}
+
 /// Parse and measure a pipe table starting at `start`. Returns the layout and
 /// how many source lines it occupied. Cell spans carry no styling of their own
 /// (colors), only inline structure, so each back end can add its own.
@@ -1007,7 +1018,7 @@ fn table_layout(lines: &[&str], start: usize, cfg: &Cfg) -> (Table, usize) {
         if !lines[i].contains('|') {
             break;
         }
-        let t = lines[i].trim().trim_matches('|');
+        let t = table_body(lines[i]);
         let cells: Vec<String> =
             split_cells(t).into_iter().map(|c| c.trim().to_string()).collect();
         if i == start + 1 {
@@ -1059,7 +1070,7 @@ fn table_layout(lines: &[&str], start: usize, cfg: &Cfg) -> (Table, usize) {
     }
 
     let mut out_rows: Vec<TableRow> = Vec::new();
-    if cells.len() >= 2 {
+    if !cells.is_empty() {
         out_rows.push(TableRow::Top);
         out_rows.push(TableRow::Cells { header: true, cells: cells[0].clone() });
         out_rows.push(TableRow::Sep);
@@ -1153,6 +1164,28 @@ pub fn table_text(t: &Table) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_only_table_keeps_its_cells() {
+        let parsed = parse("| Name | Value |\n| --- | --- |", &Cfg::new(false, 80, false));
+        let table = match &parsed[0] { Line::Table(t) => t, _ => panic!("expected table") };
+        assert!(table.rows.iter().any(|r| matches!(r, TableRow::Cells { header: true, cells }
+            if spans_plain(&cells[0]) == "Name" && spans_plain(&cells[1]) == "Value")));
+        assert_eq!(table_text(table).len(), 4);
+    }
+
+    #[test]
+    fn table_boundary_empty_cells_and_escaped_pipes_survive() {
+        assert_eq!(split_cells(table_body("||LEFT|RIGHT||")), ["", "LEFT", "RIGHT", ""]);
+        assert_eq!(split_cells(table_body(r"| left | right\|")), [" left ", r" right\|"]);
+        let parsed = parse("||Name||\n|---|---|---|\n||Value||", &Cfg::new(false, 80, false));
+        let table = match &parsed[0] { Line::Table(t) => t, _ => panic!("expected table") };
+        assert_eq!(table.widths.len(), 3);
+        let cells = table.rows.iter().find_map(|row| match row {
+            TableRow::Cells { header: false, cells } => Some(cells), _ => None,
+        }).unwrap();
+        assert_eq!(cells.iter().map(|s| spans_plain(s)).collect::<Vec<_>>(), ["", "Value", ""]);
+    }
 
     #[test]
     fn truncate_spans_fits_untouched() {

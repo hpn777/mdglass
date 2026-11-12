@@ -21,6 +21,8 @@ check: test release
 	python3 tests/pty_smoke.py $(TARGET_DIR)/release/$(BIN)
 	python3 tests/gui_abi_audit.py src/gui.rs
 	python3 tests/gui_smoke.py $(TARGET_DIR)/release/$(BIN)
+	python3 tests/output_smoke.py $(TARGET_DIR)/release/$(BIN)
+	python3 tests/output_gui_smoke.py $(TARGET_DIR)/release/$(BIN)
 
 # Ubuntu/Debian package in dist/
 deb:

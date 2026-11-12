@@ -46,7 +46,7 @@ const POLICY_AUTOMATIC: c_int = 1;
 /// order their members differently, and 3 is PANGO_WRAP_NONE.
 const PANGO_WRAP_WORD_CHAR: c_int = 2;
 const PHASE_CAPTURED: c_int = 1;
-const NON_UNIQUE: c_uint = 16; // G_APPLICATION_NON_UNIQUE
+const NON_UNIQUE: c_uint = 32; // G_APPLICATION_NON_UNIQUE = 1 << 5 (16 is HANDLES_COMMAND_LINE)
 const PROVIDER_PRIORITY: c_uint = 600; // GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
 const WEIGHT_BOLD: c_int = 700;
 const STYLE_ITALIC: c_int = 2;
@@ -88,6 +88,7 @@ struct Lib {
     gtk_window_set_default_size: unsafe extern "C" fn(Ptr, c_int, c_int),
     gtk_window_get_default_size: unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int),
     gtk_window_close: unsafe extern "C" fn(Ptr),
+    gtk_window_get_application: unsafe extern "C" fn(Ptr) -> Ptr,
     adw_application_window_set_content: unsafe extern "C" fn(Ptr, Ptr),
     gtk_window_present: unsafe extern "C" fn(Ptr),
     adw_header_bar_set_title_widget: unsafe extern "C" fn(Ptr, Ptr),
@@ -127,20 +128,8 @@ struct Lib {
     g_settings_schema_unref: unsafe extern "C" fn(Ptr),
     g_settings_new_full: unsafe extern "C" fn(Ptr, Ptr, Ptr) -> Ptr,
     g_settings_set_string: unsafe extern "C" fn(Ptr, *const c_char, *const c_char) -> c_int,
-    gdk_pixbuf_loader_new_with_type: unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr,
-    gdk_pixbuf_loader_write: unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int,
-    gdk_pixbuf_loader_close: unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int,
-    gdk_pixbuf_loader_get_pixbuf: unsafe extern "C" fn(Ptr) -> Ptr,
-    gdk_pixbuf_get_width: unsafe extern "C" fn(Ptr) -> c_int,
-    gdk_pixbuf_get_height: unsafe extern "C" fn(Ptr) -> c_int,
-    gdk_pixbuf_scale_simple: unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr,
-    gdk_pixbuf_loader_set_size: unsafe extern "C" fn(Ptr, c_int, c_int),
-    gdk_pixbuf_get_n_channels: unsafe extern "C" fn(Ptr) -> c_int,
-    gdk_pixbuf_get_has_alpha: unsafe extern "C" fn(Ptr) -> c_int,
-    gdk_pixbuf_get_bits_per_sample: unsafe extern "C" fn(Ptr) -> c_int,
+    pictures: Option<PictureLib>,
     g_error_free: unsafe extern "C" fn(Ptr),
-    gdk_pixbuf_get_pixels: unsafe extern "C" fn(Ptr) -> Ptr,
-    gdk_pixbuf_get_rowstride: unsafe extern "C" fn(Ptr) -> c_int,
     g_bytes_unref: unsafe extern "C" fn(Ptr),
     gtk_text_view_get_iter_location: unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int),
     gtk_scrolled_window_get_hadjustment: unsafe extern "C" fn(Ptr) -> Ptr,
@@ -255,6 +244,44 @@ struct Lib {
         unsafe extern "C" fn(c_uint, Option<unsafe extern "C" fn(Ptr) -> c_int>, Ptr) -> c_uint,
 }
 
+// All-or-nothing optional picture pipeline. Every downstream measurement,
+// scaling and pixel-format function is available whenever this is Some.
+struct PictureLib {
+    gdk_pixbuf_loader_new_with_type: unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr,
+    gdk_pixbuf_loader_write: unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int,
+    gdk_pixbuf_loader_close: unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int,
+    gdk_pixbuf_loader_get_pixbuf: unsafe extern "C" fn(Ptr) -> Ptr,
+    gdk_pixbuf_get_width: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_height: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_scale_simple: unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr,
+    gdk_pixbuf_loader_set_size: unsafe extern "C" fn(Ptr, c_int, c_int),
+    gdk_pixbuf_get_n_channels: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_has_alpha: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_bits_per_sample: unsafe extern "C" fn(Ptr) -> c_int,
+    gdk_pixbuf_get_pixels: unsafe extern "C" fn(Ptr) -> Ptr,
+    gdk_pixbuf_get_rowstride: unsafe extern "C" fn(Ptr) -> c_int,
+}
+
+impl PictureLib {
+    unsafe fn load(h: Ptr) -> Result<Self, String> {
+        Ok(Self {
+            gdk_pixbuf_loader_new_with_type: tf(h, "gdk_pixbuf_loader_new_with_type")?,
+            gdk_pixbuf_loader_write: tf(h, "gdk_pixbuf_loader_write")?,
+            gdk_pixbuf_loader_close: tf(h, "gdk_pixbuf_loader_close")?,
+            gdk_pixbuf_loader_get_pixbuf: tf(h, "gdk_pixbuf_loader_get_pixbuf")?,
+            gdk_pixbuf_get_width: tf(h, "gdk_pixbuf_get_width")?,
+            gdk_pixbuf_get_height: tf(h, "gdk_pixbuf_get_height")?,
+            gdk_pixbuf_scale_simple: tf(h, "gdk_pixbuf_scale_simple")?,
+            gdk_pixbuf_loader_set_size: tf(h, "gdk_pixbuf_loader_set_size")?,
+            gdk_pixbuf_get_n_channels: tf(h, "gdk_pixbuf_get_n_channels")?,
+            gdk_pixbuf_get_has_alpha: tf(h, "gdk_pixbuf_get_has_alpha")?,
+            gdk_pixbuf_get_bits_per_sample: tf(h, "gdk_pixbuf_get_bits_per_sample")?,
+            gdk_pixbuf_get_pixels: tf(h, "gdk_pixbuf_get_pixels")?,
+            gdk_pixbuf_get_rowstride: tf(h, "gdk_pixbuf_get_rowstride")?,
+        })
+    }
+}
+
 #[rustfmt::skip]
 fn load_lib() -> Result<Lib, String> {
     unsafe {
@@ -268,24 +295,9 @@ fn load_lib() -> Result<Lib, String> {
         // loader inside it (librsvg) is the only soft one: without it the
         // loader simply fails and blocks stay code
         let pixbuf = expect(dlopen(c"libgdk_pixbuf-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "libgdk_pixbuf-2.0")?;
-        let mut missing: Vec<String> = Vec::new();
         macro_rules! g {
             ($h:expr, $n:literal, $t:ty) => {
-                match tf::<$t>($h, $n) {
-                    Ok(f) => f,
-                    Err(e) => { missing.push(e); std::mem::transmute::<*mut c_void, $t>(std::ptr::null_mut()) }
-                }
-            };
-        }
-        // picture-pipeline symbols (gdk-pixbuf and its diagnostics): a
-        // machine missing one keeps code blocks as text - the GUI starts
-        // and only loses the pictures (picture_for checks for nulls)
-        macro_rules! gopt {
-            ($h:expr, $n:literal, $t:ty) => {
-                match tf::<$t>($h, $n) {
-                    Ok(f) => f,
-                    Err(_) => std::mem::transmute::<*mut c_void, $t>(std::ptr::null_mut()),
-                }
+                tf::<$t>($h, $n)?
             };
         }
         macro_rules! gs {
@@ -303,6 +315,7 @@ fn load_lib() -> Result<Lib, String> {
             gtk_window_set_default_size: gs!("gtk_window_set_default_size", unsafe extern "C" fn(Ptr, c_int, c_int)),
             gtk_window_get_default_size: gs!("gtk_window_get_default_size", unsafe extern "C" fn(Ptr, *mut c_int, *mut c_int)),
             gtk_window_close: gs!("gtk_window_close", unsafe extern "C" fn(Ptr)),
+            gtk_window_get_application: gs!("gtk_window_get_application", unsafe extern "C" fn(Ptr) -> Ptr),
             adw_application_window_set_content: gs!(adw "adw_application_window_set_content", unsafe extern "C" fn(Ptr, Ptr)),
             gtk_window_present: gs!("gtk_window_present", unsafe extern "C" fn(Ptr)),
             adw_header_bar_set_title_widget: gs!(adw "adw_header_bar_set_title_widget", unsafe extern "C" fn(Ptr, Ptr)),
@@ -340,20 +353,8 @@ fn load_lib() -> Result<Lib, String> {
             g_settings_schema_unref: gs!(gio "g_settings_schema_unref", unsafe extern "C" fn(Ptr)),
             g_settings_new_full: gs!(gio "g_settings_new_full", unsafe extern "C" fn(Ptr, Ptr, Ptr) -> Ptr),
             g_settings_set_string: gs!(gio "g_settings_set_string", unsafe extern "C" fn(Ptr, *const c_char, *const c_char) -> c_int),
-            gdk_pixbuf_loader_new_with_type: gopt!(pixbuf, "gdk_pixbuf_loader_new_with_type", unsafe extern "C" fn(*const c_char, *mut Ptr) -> Ptr),
-            gdk_pixbuf_loader_write: gopt!(pixbuf, "gdk_pixbuf_loader_write", unsafe extern "C" fn(Ptr, *const u8, usize, *mut Ptr) -> c_int),
-            gdk_pixbuf_loader_close: gopt!(pixbuf, "gdk_pixbuf_loader_close", unsafe extern "C" fn(Ptr, *mut Ptr) -> c_int),
-            gdk_pixbuf_loader_get_pixbuf: gopt!(pixbuf, "gdk_pixbuf_loader_get_pixbuf", unsafe extern "C" fn(Ptr) -> Ptr),
-            gdk_pixbuf_get_width: gopt!(pixbuf, "gdk_pixbuf_get_width", unsafe extern "C" fn(Ptr) -> c_int),
-            gdk_pixbuf_get_height: gopt!(pixbuf, "gdk_pixbuf_get_height", unsafe extern "C" fn(Ptr) -> c_int),
-            gdk_pixbuf_scale_simple: gopt!(pixbuf, "gdk_pixbuf_scale_simple", unsafe extern "C" fn(Ptr, c_int, c_int, c_int) -> Ptr),
-            gdk_pixbuf_loader_set_size: gopt!(pixbuf, "gdk_pixbuf_loader_set_size", unsafe extern "C" fn(Ptr, c_int, c_int)),
-            gdk_pixbuf_get_n_channels: gopt!(pixbuf, "gdk_pixbuf_get_n_channels", unsafe extern "C" fn(Ptr) -> c_int),
-            gdk_pixbuf_get_has_alpha: gopt!(pixbuf, "gdk_pixbuf_get_has_alpha", unsafe extern "C" fn(Ptr) -> c_int),
-            gdk_pixbuf_get_bits_per_sample: gopt!(pixbuf, "gdk_pixbuf_get_bits_per_sample", unsafe extern "C" fn(Ptr) -> c_int),
-            g_error_free: gopt!(glib, "g_error_free", unsafe extern "C" fn(Ptr)),
-            gdk_pixbuf_get_pixels: gopt!(pixbuf, "gdk_pixbuf_get_pixels", unsafe extern "C" fn(Ptr) -> Ptr),
-            gdk_pixbuf_get_rowstride: gopt!(pixbuf, "gdk_pixbuf_get_rowstride", unsafe extern "C" fn(Ptr) -> c_int),
+            pictures: PictureLib::load(pixbuf).ok(),
+            g_error_free: gs!(glib "g_error_free", unsafe extern "C" fn(Ptr)),
             g_bytes_unref: gs!(glib "g_bytes_unref", unsafe extern "C" fn(Ptr)),
             gtk_text_view_get_iter_location: gs!("gtk_text_view_get_iter_location", unsafe extern "C" fn(Ptr, *const TextIter, *mut c_int)),
             gtk_scrolled_window_get_hadjustment: gs!("gtk_scrolled_window_get_hadjustment", unsafe extern "C" fn(Ptr) -> Ptr),
@@ -461,9 +462,6 @@ fn load_lib() -> Result<Lib, String> {
             g_file_peek_path: gs!(gio "g_file_peek_path", unsafe extern "C" fn(Ptr) -> *const c_char),
             g_timeout_add_seconds: gs!(glib "g_timeout_add_seconds", unsafe extern "C" fn(c_uint, Option<unsafe extern "C" fn(Ptr) -> c_int>, Ptr) -> c_uint),
         };
-        if !missing.is_empty() {
-            return Err(format!("system libraries are missing: {}", missing.join(", ")));
-        }
         Ok(lib)
     }
 }
@@ -475,9 +473,682 @@ fn l() -> &'static Lib {
     LIB.get().unwrap()
 }
 
+// Loaded only when requested: a GTK build without printing must still open
+// documents (and must not affect the terminal backend).
+struct PrintLib {
+    new: unsafe extern "C" fn() -> Ptr,
+    set_unit: unsafe extern "C" fn(Ptr, c_int),
+    set_full_page: unsafe extern "C" fn(Ptr, c_int),
+    set_async: unsafe extern "C" fn(Ptr, c_int),
+    set_pages: unsafe extern "C" fn(Ptr, c_int),
+    set_setup: unsafe extern "C" fn(Ptr, Ptr),
+    run: unsafe extern "C" fn(Ptr, c_int, Ptr, *mut Ptr) -> c_int,
+    cancel: unsafe extern "C" fn(Ptr),
+    width: unsafe extern "C" fn(Ptr) -> f64,
+    height: unsafe extern "C" fn(Ptr) -> f64,
+    cairo: unsafe extern "C" fn(Ptr) -> Ptr,
+    setup_new: unsafe extern "C" fn() -> Ptr,
+    paper_new: unsafe extern "C" fn(*const c_char) -> Ptr,
+    paper_free: unsafe extern "C" fn(Ptr),
+    setup_paper: unsafe extern "C" fn(Ptr, Ptr),
+    setup_orientation: unsafe extern "C" fn(Ptr, c_int),
+    disconnect: unsafe extern "C" fn(Ptr, c_ulong),
+    hard_margins: unsafe extern "C" fn(Ptr, *mut f64, *mut f64, *mut f64, *mut f64) -> c_int,
+    export_filename: unsafe extern "C" fn(Ptr, *const c_char),
+}
+
+impl PrintLib {
+    unsafe fn load() -> Result<Self, String> {
+        let h = expect(dlopen(c"libgtk-4.so.1".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GTK printing")?;
+        let go = expect(dlopen(c"libgobject-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GObject")?;
+        Ok(Self {
+            new: tf(h, "gtk_print_operation_new")?,
+            set_unit: tf(h, "gtk_print_operation_set_unit")?,
+            set_full_page: tf(h, "gtk_print_operation_set_use_full_page")?,
+            set_async: tf(h, "gtk_print_operation_set_allow_async")?,
+            set_pages: tf(h, "gtk_print_operation_set_n_pages")?,
+            set_setup: tf(h, "gtk_print_operation_set_default_page_setup")?,
+            run: tf(h, "gtk_print_operation_run")?,
+            cancel: tf(h, "gtk_print_operation_cancel")?,
+            width: tf(h, "gtk_print_context_get_width")?,
+            height: tf(h, "gtk_print_context_get_height")?,
+            cairo: tf(h, "gtk_print_context_get_cairo_context")?,
+            setup_new: tf(h, "gtk_page_setup_new")?,
+            paper_new: tf(h, "gtk_paper_size_new")?,
+            paper_free: tf(h, "gtk_paper_size_free")?,
+            setup_paper: tf(h, "gtk_page_setup_set_paper_size")?,
+            setup_orientation: tf(h, "gtk_page_setup_set_orientation")?,
+            disconnect: tf(go, "g_signal_handler_disconnect")?,
+            hard_margins: tf(h, "gtk_print_context_get_hard_margins")?,
+            export_filename: tf(h, "gtk_print_operation_set_export_filename")?,
+        })
+    }
+}
+
+struct SaveLib {
+    save: unsafe extern "C" fn(Ptr, Ptr, Ptr, Option<unsafe extern "C" fn(Ptr, Ptr, Ptr)>, Ptr),
+    finish: unsafe extern "C" fn(Ptr, Ptr, *mut Ptr) -> Ptr,
+    name: unsafe extern "C" fn(Ptr, *const c_char),
+    dismissed: unsafe extern "C" fn(Ptr, c_uint, c_int) -> c_int,
+    dialog_domain: unsafe extern "C" fn() -> c_uint,
+    io_domain: unsafe extern "C" fn() -> c_uint,
+    hold: unsafe extern "C" fn(Ptr),
+    release: unsafe extern "C" fn(Ptr),
+}
+
+impl SaveLib {
+    unsafe fn load() -> Result<Self, String> {
+        let gtk = expect(dlopen(c"libgtk-4.so.1".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GTK PDF save dialog")?;
+        let glib = expect(dlopen(c"libglib-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GLib")?;
+        let gio = expect(dlopen(c"libgio-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GIO")?;
+        Ok(Self {
+            save: tf(gtk, "gtk_file_dialog_save")?,
+            finish: tf(gtk, "gtk_file_dialog_save_finish")?,
+            name: tf(gtk, "gtk_file_dialog_set_initial_name")?,
+            dismissed: tf(glib, "g_error_matches")?,
+            dialog_domain: tf(gtk, "gtk_dialog_error_quark")?,
+            io_domain: tf(gio, "g_io_error_quark")?,
+            hold: tf(gio, "g_application_hold")?,
+            release: tf(gio, "g_application_release")?,
+        })
+    }
+}
+
+#[repr(C)]
+struct OutputError { domain: c_uint, code: c_int, message: *const c_char }
+
+unsafe fn output_error(error: Ptr) -> String {
+    if error.is_null() { return "The operation failed without an error description.".into(); }
+    let message = (*(error as *const OutputError)).message;
+    let text = if message.is_null() { "Unknown output error".into() }
+        else { CStr::from_ptr(message).to_string_lossy().into_owned() };
+    (l().g_error_free)(error);
+    text
+}
+
+// A separate application window also works after the originating document
+// window closes. No asynchronous output callback ever dereferences APP.
+unsafe fn output_message(application: Ptr, title: &str, message: &str) {
+    let win = (l().adw_application_window_new)(application);
+    (l().gtk_window_set_title)(win, cstr(title).as_ptr());
+    (l().gtk_window_set_default_size)(win, 520, 180);
+    let label = (l().gtk_label_new)(cstr(message).as_ptr());
+    set_b(label, "wrap", true);
+    set_b(label, "selectable", true);
+    for f in [l().gtk_widget_set_margin_start, l().gtk_widget_set_margin_end,
+              l().gtk_widget_set_margin_top, l().gtk_widget_set_margin_bottom] { f(label, 24); }
+    (l().adw_application_window_set_content)(win, label);
+    (l().gtk_window_present)(win);
+}
+
+// Catch all Rust failures before returning to GTK's C signal machinery.
+fn output_guard(f: impl FnOnce()) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_ok()
+}
+
+struct NativePrint {
+    api: PrintLib,
+    source: String,
+    settings: crate::output::Settings,
+    job: Option<crate::output::PrintJob>,
+    error: Option<String>,
+    warnings: Vec<String>,
+}
+
+unsafe extern "C" fn output_begin(operation: Ptr, context: Ptr, data: Ptr) {
+    let state = &mut *(data as *mut NativePrint);
+    if !output_guard(|| {
+        // GTK_UNIT_POINTS=1 also controls hard-margin units. Full-page
+        // dimensions match PDF geometry; enlarge only margins that would clip.
+        let (mut top, mut bottom, mut left, mut right) = (0.0, 0.0, 0.0, 0.0);
+        if (state.api.hard_margins)(context, &mut top, &mut bottom, &mut left, &mut right) != 0 {
+            let hardware = top.max(bottom).max(left).max(right);
+            if hardware.is_finite() && hardware > state.settings.margin {
+                state.warnings.push(format!("Printer margins require {:.1} pt instead of {:.1} pt.", hardware, state.settings.margin));
+                state.settings.margin = hardware;
+            }
+        }
+        match crate::output::PrintJob::for_page(&state.source, &state.settings,
+            (state.api.width)(context), (state.api.height)(context)) {
+            Ok(job) => {
+                let count = job.page_count();
+                if count == 0 || count > c_int::MAX as usize {
+                    state.error = Some("Invalid print page count".into());
+                    (state.api.cancel)(operation);
+                } else {
+                    eprintln!("mdglass-print: prepared {count} pages");
+                    (state.api.set_pages)(operation, count as c_int);
+                    state.job = Some(job);
+                }
+            }
+            Err(e) => { state.error = Some(e); (state.api.cancel)(operation); }
+        }
+    }) {
+        state.error = Some("Could not prepare the print job.".into());
+        (state.api.cancel)(operation);
+    }
+}
+
+unsafe extern "C" fn output_draw(operation: Ptr, context: Ptr, page: c_int, data: Ptr) {
+    let state = &mut *(data as *mut NativePrint);
+    if !output_guard(|| {
+        let result = match state.job.as_ref() {
+            Some(job) if page >= 0 => job.draw_page(page as usize, (state.api.cairo)(context)),
+            _ => Err("Print job was not prepared".into()),
+        };
+        if let Err(e) = result { state.error = Some(e); (state.api.cancel)(operation); }
+        else { eprintln!("mdglass-print: drew page {}", page + 1); }
+    }) {
+        state.error = Some("Could not draw the printed page.".into());
+        (state.api.cancel)(operation);
+    }
+}
+
+unsafe extern "C" fn act_print(_: Ptr, _: Ptr, _: Ptr) {
+    start_output_settings(true);
+}
+
+struct OutputOperation {
+    operation: Ptr,
+    disconnect: unsafe extern "C" fn(Ptr, c_ulong),
+    begin: c_ulong,
+    draw: c_ulong,
+}
+
+impl Drop for OutputOperation {
+    fn drop(&mut self) { unsafe {
+        for id in [self.begin, self.draw] {
+            if id != 0 { (self.disconnect)(self.operation, id); }
+        }
+        (l().g_object_unref)(self.operation);
+    } }
+}
+
+unsafe fn run_native_print(request: PdfSave, export: Option<&Path>) -> Result<(), String> {
+        let application = request.application;
+        let window = if (l().gtk_window_get_application)(request.window).is_null() {
+            std::ptr::null_mut()
+        } else { request.window };
+        let api = match PrintLib::load() {
+            Ok(api) => api,
+            Err(e) => return Err(e),
+        };
+        if let Some(path) = export { refuse_input_overwrite(&request, path)?; }
+        use std::os::unix::ffi::OsStrExt;
+        let export_filename = export.map(|path| CString::new(path.as_os_str().as_bytes()))
+            .transpose().map_err(|_| "Invalid export filename")?;
+        let mut state = NativePrint { api, source: request.source.clone(), settings: request.settings.clone(), job: None, error: None, warnings: Vec::new() };
+        let op = (state.api.new)();
+        // Declared after state, so even a caught Rust panic disconnects all
+        // callbacks before their borrowed stack data is destroyed.
+        let mut operation = OutputOperation { operation: op, disconnect: state.api.disconnect, begin: 0, draw: 0 };
+        (state.api.set_unit)(op, 1);
+        (state.api.set_full_page)(op, 1);
+        // Synchronous run keeps stack callback data alive through cancellation
+        // and nested main-loop dispatch, without borrowing App across either.
+        (state.api.set_async)(op, 0);
+        let setup = (state.api.setup_new)();
+        let paper_name = match state.settings.paper {
+            crate::output::Paper::A4 => c"iso_a4", crate::output::Paper::Letter => c"na_letter",
+            crate::output::Paper::A3 => c"iso_a3", crate::output::Paper::Legal => c"na_legal",
+        };
+        let paper = (state.api.paper_new)(paper_name.as_ptr());
+        (state.api.setup_paper)(setup, paper);
+        (state.api.paper_free)(paper);
+        (state.api.setup_orientation)(setup, if state.settings.landscape { 1 } else { 0 });
+        (state.api.set_setup)(op, setup);
+        (l().g_object_unref)(setup);
+        let data = &mut state as *mut NativePrint as Ptr;
+        operation.begin = (l().g_signal_connect_data)(op, c"begin-print".as_ptr(),
+            cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(output_begin), data, std::ptr::null_mut(), 0);
+        operation.draw = (l().g_signal_connect_data)(op, c"draw-page".as_ptr(),
+            cbptr::<unsafe extern "C" fn(Ptr, Ptr, c_int, Ptr)>(output_draw), data, std::ptr::null_mut(), 0);
+        let mut error = std::ptr::null_mut();
+        let action = if let Some(filename) = export_filename {
+            (state.api.export_filename)(op, filename.as_ptr());
+            3 // GTK_PRINT_OPERATION_ACTION_EXPORT
+        } else { 0 }; // PRINT_DIALOG
+        let result = (state.api.run)(op, action, window, &mut error);
+        if result == 3 || !(0..=3).contains(&result) {
+            // allow_async=false forbids IN_PROGRESS. Stop a misbehaving
+            // backend before disconnecting its borrowed callback state.
+            (state.api.cancel)(op);
+        }
+        // Backends may retain the operation even after synchronous completion.
+        // Disconnect explicitly before the stack callback state goes away.
+        drop(operation);
+        if !error.is_null() { state.error = Some(output_error(error)); }
+        if let Some(e) = state.error { return Err(e); }
+        match result {
+          0 => return Err("Printing failed.".into()), // ERROR
+          1 => { // APPLY
+            if let Some(job) = state.job {
+                state.warnings.extend_from_slice(job.warnings());
+            }
+            if !state.warnings.is_empty() && export.is_none() { output_message(application, "Print warnings", &state.warnings.join("\n")); }
+            for warning in &state.warnings { eprintln!("mdglass-print: {warning}"); }
+          }
+          2 if export.is_none() => {} // CANCEL is a normal interactive outcome
+          2 => return Err("Native PDF printing was cancelled.".into()),
+          3 => return Err("Print backend unexpectedly started an asynchronous operation.".into()),
+          _ => return Err(format!("Print backend returned unknown result {result}.")),
+        }
+        Ok(())
+}
+
+struct PdfSave {
+    api: SaveLib,
+    application: Ptr,
+    window: Ptr,
+    source: String,
+    settings: crate::output::Settings,
+    current_path: Option<std::path::PathBuf>,
+}
+
+impl Drop for PdfSave {
+    fn drop(&mut self) { unsafe {
+        (l().g_object_unref)(self.window);
+        (self.api.release)(self.application);
+        (l().g_object_unref)(self.application);
+    } }
+}
+
+unsafe extern "C" fn output_saved(dialog: Ptr, result: Ptr, data: Ptr) {
+    let mut state = Box::from_raw(data as *mut PdfSave);
+    if !output_guard(|| {
+        let mut error = std::ptr::null_mut();
+        let file = (state.api.finish)(dialog, result, &mut error);
+        if file.is_null() {
+            if !error.is_null() {
+                // GTK_DIALOG_ERROR_CANCELLED=1 / DISMISSED=2 and
+                // G_IO_ERROR_CANCELLED=19 are expected, silent outcomes.
+                let cancelled = (state.api.dismissed)(error, (state.api.dialog_domain)(), 1) != 0
+                    || (state.api.dismissed)(error, (state.api.dialog_domain)(), 2) != 0
+                    || (state.api.dismissed)(error, (state.api.io_domain)(), 19) != 0;
+                let message = output_error(error);
+                if !cancelled { output_message(state.application, "PDF export failed", &message); }
+            } else { output_message(state.application, "PDF export failed", "No destination was returned."); }
+            return;
+        }
+        if !error.is_null() { (l().g_error_free)(error); }
+        let path = (l().g_file_peek_path)(file);
+        let destination = if path.is_null() { Err("Choose a local file for PDF export.".to_string()) }
+            else {
+                // GFile paths need not be UTF-8 on Unix.
+                use std::os::unix::ffi::OsStrExt;
+                let path = Path::new(std::ffi::OsStr::from_bytes(CStr::from_ptr(path).to_bytes()));
+                refuse_input_overwrite(&state, path).map(|_| path.to_path_buf())
+            };
+        (l().g_object_unref)(file);
+        let outcome = destination.and_then(|path| start_pdf_worker(&mut state, path, false, false));
+        match outcome {
+            Ok(()) => {}
+            Err(e) => output_message(state.application, "PDF export failed", &e),
+        }
+    }) { output_message(state.application, "PDF export failed", "An unexpected error interrupted PDF export."); }
+    (l().g_object_unref)(dialog);
+}
+
+unsafe extern "C" fn act_export_pdf(_: Ptr, _: Ptr, _: Ptr) {
+    start_output_settings(false);
+}
+
+fn refuse_input_overwrite(request: &PdfSave, path: &Path) -> Result<(), String> {
+    if request.current_path.as_ref().is_some_and(|input| crate::same_file(input, path))
+        || (request.current_path.is_none() && crate::stdin_is_file(path)) {
+        Err("Refusing to overwrite the input document (including a symlink or hardlink alias).".into())
+    } else { Ok(()) }
+}
+
+unsafe fn snapshot_output() -> Result<PdfSave, String> {
+    if !document_open() { return Err("The document window is closed.".into()); }
+    let a = &*app();
+    let source = a.src_cache.clone().ok_or("Open a document before printing or exporting.")?;
+    let settings = a.output_settings.borrow().clone();
+    let current_path = if a.content.is_none() { a.files.get(a.idx).map(std::path::PathBuf::from) } else { None };
+    let api = SaveLib::load()?;
+    let window = (l().g_object_ref)(a.win);
+    let application = (l().g_object_ref)(a.app);
+    (api.hold)(application);
+    Ok(PdfSave { api, application, window, source, settings, current_path })
+}
+
+unsafe fn save_pdf_dialog(state: PdfSave) {
+        let dialog = (l().gtk_file_dialog_new)();
+        (state.api.name)(dialog, c"document.pdf".as_ptr());
+        let window = if (l().gtk_window_get_application)(state.window).is_null() {
+            std::ptr::null_mut()
+        } else { state.window };
+        let state = Box::new(state);
+        let save = state.api.save;
+        save(dialog, window, std::ptr::null_mut(), Some(output_saved), Box::into_raw(state) as Ptr);
+}
+
+type SourceCallback = Option<unsafe extern "C" fn(Ptr) -> c_int>;
+type SourceDestroy = Option<unsafe extern "C" fn(Ptr)>;
+
+struct PdfWorkerLib {
+    timeout: unsafe extern "C" fn(c_int, c_uint, SourceCallback, Ptr, SourceDestroy) -> c_uint,
+    disconnect: unsafe extern "C" fn(Ptr, c_ulong),
+    destroy: unsafe extern "C" fn(Ptr),
+}
+
+impl PdfWorkerLib {
+    unsafe fn load() -> Result<Self, String> {
+        let gtk = expect(dlopen(c"libgtk-4.so.1".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GTK PDF progress")?;
+        let glib = expect(dlopen(c"libglib-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GLib")?;
+        let go = expect(dlopen(c"libgobject-2.0.so.0".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GObject")?;
+        Ok(Self {
+            timeout: tf(glib, "g_timeout_add_full")?,
+            disconnect: tf(go, "g_signal_handler_disconnect")?,
+            destroy: tf(gtk, "gtk_window_destroy")?,
+        })
+    }
+}
+
+// Exclusively main-thread state. The timeout's destroy notifier owns this
+// allocation; signal handlers only borrow it until Drop disconnects them.
+struct PdfWorker {
+    api: PdfWorkerLib,
+    application: Ptr,
+    release: unsafe extern "C" fn(Ptr),
+    window: Ptr,
+    label: Ptr,
+    button: Ptr,
+    clicked: c_ulong,
+    close: c_ulong,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    result: std::sync::mpsc::Receiver<Result<Vec<String>, String>>,
+    scripted: bool,
+    marker: &'static str,
+}
+
+impl Drop for PdfWorker {
+    fn drop(&mut self) { unsafe {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.clicked != 0 { (self.api.disconnect)(self.button, self.clicked); }
+        if self.close != 0 { (self.api.disconnect)(self.window, self.close); }
+        (self.api.destroy)(self.window);
+        (l().g_object_unref)(self.window);
+        (self.release)(self.application);
+        (l().g_object_unref)(self.application);
+    } }
+}
+
+unsafe fn cancel_pdf_worker(data: Ptr) {
+    let state = &*(data as *const PdfWorker);
+    state.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    (l().gtk_label_set_text)(state.label, c"Cancelling PDF export…".as_ptr());
+    set_b(state.button, "sensitive", false);
+}
+
+unsafe extern "C" fn pdf_worker_cancel(_: Ptr, data: Ptr) {
+    let _ = output_guard(|| cancel_pdf_worker(data));
+}
+
+unsafe extern "C" fn pdf_worker_close(_: Ptr, data: Ptr) -> c_int {
+    let _ = output_guard(|| cancel_pdf_worker(data));
+    1 // keep widgets and borrowed callback data alive until the worker finishes
+}
+
+unsafe extern "C" fn pdf_worker_free(data: Ptr) {
+    let _ = output_guard(|| drop(Box::from_raw(data as *mut PdfWorker)));
+}
+
+unsafe extern "C" fn pdf_worker_poll(data: Ptr) -> c_int {
+    let state = &*(data as *const PdfWorker);
+    let mut keep = 0;
+    if !output_guard(|| {
+        use std::sync::mpsc::TryRecvError;
+        let outcome = match state.result.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => { keep = 1; return; }
+            Err(TryRecvError::Disconnected) => Err("PDF export worker stopped without a result.".into()),
+        };
+        match outcome {
+            Ok(warnings) => {
+                if state.scripted {
+                    eprintln!("mdglass-script: {} done ok", state.marker);
+                    for warning in warnings { eprintln!("mdglass-script: PDF warning: {warning}"); }
+                } else {
+                    let message = if warnings.is_empty() { "PDF exported successfully.".into() }
+                        else { format!("PDF exported with warnings:\n{}", warnings.join("\n")) };
+                    output_message(state.application, "Export PDF", &message);
+                }
+            }
+            Err(e) if e == "PDF export cancelled" => {
+                if state.scripted { eprintln!("mdglass-script: {} done cancelled", state.marker); }
+            }
+            Err(e) => {
+                if state.scripted { eprintln!("mdglass-script: {} FAILED: {e}", state.marker); }
+                output_message(state.application, "PDF export failed", &e);
+            }
+        }
+    }) {
+        output_message(state.application, "PDF export failed", "Could not receive the PDF export result.");
+    }
+    keep // GLib calls pdf_worker_free when this returns G_SOURCE_REMOVE (0)
+}
+
+unsafe fn start_pdf_worker(request: &mut PdfSave, path: std::path::PathBuf, immediate_cancel: bool, scripted: bool) -> Result<(), String> {
+    refuse_input_overwrite(request, &path)?;
+    let api = PdfWorkerLib::load()?;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(immediate_cancel));
+    let mut settings = request.settings.clone();
+    settings.cancel = Some(cancel.clone());
+    let source = std::mem::take(&mut request.source);
+    let (sender, result) = std::sync::mpsc::channel();
+    let application = (l().g_object_ref)(request.application);
+    (request.api.hold)(application);
+    let window = (l().adw_application_window_new)(application);
+    (l().g_object_ref)(window); // survives any external attempt to close it
+    (l().gtk_window_set_title)(window, c"Exporting PDF".as_ptr());
+    (l().gtk_window_set_default_size)(window, 400, 150);
+    let content = (l().gtk_box_new)(ORIENT_VERTICAL, 16);
+    for f in [l().gtk_widget_set_margin_start, l().gtk_widget_set_margin_end,
+              l().gtk_widget_set_margin_top, l().gtk_widget_set_margin_bottom] { f(content, 24); }
+    let label = (l().gtk_label_new)(c"Exporting PDF…".as_ptr());
+    let button = (l().gtk_button_new_with_label)(c"Cancel".as_ptr());
+    (l().gtk_box_append)(content, label);
+    (l().gtk_box_append)(content, button);
+    (l().adw_application_window_set_content)(window, content);
+    let mut state = Box::new(PdfWorker { api, application, release: request.api.release,
+        window, label, button, clicked: 0, close: 0, cancel, result, scripted,
+        marker: if immediate_cancel { "pdf-cancel" } else { "pdf-async" } });
+    let data = &mut *state as *mut PdfWorker as Ptr;
+    state.clicked = (l().g_signal_connect_data)(button, c"clicked".as_ptr(),
+        cbptr::<unsafe extern "C" fn(Ptr, Ptr)>(pdf_worker_cancel), data, std::ptr::null_mut(), 0);
+    state.close = (l().g_signal_connect_data)(window, c"close-request".as_ptr(),
+        cbptr::<unsafe extern "C" fn(Ptr, Ptr) -> c_int>(pdf_worker_close), data, std::ptr::null_mut(), 0);
+    if immediate_cancel { cancel_pdf_worker(data); }
+    // The worker owns only Rust data. Loading/rendering Cairo/Pango objects
+    // happens on this thread; no GTK objects or pointers cross the boundary.
+    std::thread::Builder::new().name("mdglass-pdf".into()).spawn(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::output::export_pdf(&source, &path, &settings)
+        })).unwrap_or_else(|_| Err("PDF export worker panicked.".into()));
+        let _ = sender.send(outcome);
+    }).map_err(|e| format!("Could not start PDF export: {e}"))?;
+    (l().gtk_window_present)(window);
+    let timeout = state.api.timeout;
+    timeout(0, 50, Some(pdf_worker_poll), Box::into_raw(state) as Ptr, Some(pdf_worker_free));
+    Ok(())
+}
+
+// Keep optional settings widgets out of the core GUI symbol requirements.
+struct OutputFormLib {
+    dialog: unsafe extern "C" fn() -> Ptr,
+    button: unsafe extern "C" fn(Ptr, *const c_char, c_int) -> Ptr,
+    content: unsafe extern "C" fn(Ptr) -> Ptr,
+    destroy: unsafe extern "C" fn(Ptr),
+    response: unsafe extern "C" fn(Ptr, c_int),
+    dropdown: unsafe extern "C" fn(*const *const c_char) -> Ptr,
+    select: unsafe extern "C" fn(Ptr, c_uint),
+    selected: unsafe extern "C" fn(Ptr) -> c_uint,
+    spin: unsafe extern "C" fn(f64, f64, f64) -> Ptr,
+    spin_set: unsafe extern "C" fn(Ptr, f64),
+    spin_get: unsafe extern "C" fn(Ptr) -> f64,
+    check: unsafe extern "C" fn(*const c_char) -> Ptr,
+    check_set: unsafe extern "C" fn(Ptr, c_int),
+    check_get: unsafe extern "C" fn(Ptr) -> c_int,
+}
+
+impl OutputFormLib {
+    unsafe fn load() -> Result<Self, String> {
+        let h = expect(dlopen(c"libgtk-4.so.1".as_ptr(), RTLD_LAZY | RTLD_GLOBAL), "GTK output settings")?;
+        Ok(Self {
+            dialog: tf(h, "gtk_dialog_new")?, button: tf(h, "gtk_dialog_add_button")?,
+            content: tf(h, "gtk_dialog_get_content_area")?, destroy: tf(h, "gtk_window_destroy")?,
+            response: tf(h, "gtk_dialog_response")?,
+            dropdown: tf(h, "gtk_drop_down_new_from_strings")?, select: tf(h, "gtk_drop_down_set_selected")?,
+            selected: tf(h, "gtk_drop_down_get_selected")?, spin: tf(h, "gtk_spin_button_new_with_range")?,
+            spin_set: tf(h, "gtk_spin_button_set_value")?, spin_get: tf(h, "gtk_spin_button_get_value")?,
+            check: tf(h, "gtk_check_button_new_with_label")?, check_set: tf(h, "gtk_check_button_set_active")?,
+            check_get: tf(h, "gtk_check_button_get_active")?,
+        })
+    }
+}
+
+struct OutputForm {
+    dialog: Ptr,
+    api: OutputFormLib,
+    request: Option<PdfSave>,
+    preferences: std::rc::Rc<std::cell::RefCell<crate::output::Settings>>,
+    print: bool,
+    paper: Ptr, orientation: Ptr, margin: Ptr, font: Ptr,
+    table: Ptr, diagram: Ptr, overlap: Ptr, repeat: Ptr, diagrams: Ptr,
+    error: Ptr,
+}
+
+// Main-thread-only test hook. The closure notifier clears this before the
+// form allocation is freed; production callbacks never depend on it or APP.
+static mut OUTPUT_FORM: *mut OutputForm = std::ptr::null_mut();
+
+unsafe extern "C" fn output_form_free(data: Ptr, _: Ptr) {
+    if OUTPUT_FORM == data as *mut OutputForm { OUTPUT_FORM = std::ptr::null_mut(); }
+    let _ = output_guard(|| { drop(Box::from_raw(data as *mut OutputForm)); });
+}
+
+unsafe extern "C" fn output_form_response(dialog: Ptr, response: c_int, data: Ptr) {
+    let state = &mut *(data as *mut OutputForm);
+    let Some(request) = state.request.as_ref() else { return; };
+    let application = (l().g_object_ref)(request.application);
+    let destroy = state.api.destroy;
+    let mut dialog_live = true;
+    if !output_guard(|| {
+        if response != -3 { dialog_live = false; destroy(dialog); return; } // GTK_RESPONSE_ACCEPT
+        use crate::output::{Paper, FitMode};
+        let mut settings = state.request.as_ref().unwrap().settings.clone();
+        settings.paper = match (state.api.selected)(state.paper) { 1 => Paper::Letter, 2 => Paper::A3, 3 => Paper::Legal, _ => Paper::A4 };
+        settings.landscape = (state.api.selected)(state.orientation) == 1;
+        settings.margin = (state.api.spin_get)(state.margin);
+        settings.font_size = (state.api.spin_get)(state.font);
+        settings.overlap = (state.api.spin_get)(state.overlap);
+        let mode = |widget| match (state.api.selected)(widget) { 1 => FitMode::Fit, 2 => FitMode::Tile, _ => FitMode::Auto };
+        settings.table_mode = mode(state.table);
+        settings.diagram_mode = mode(state.diagram);
+        settings.repeat_first_column = (state.api.check_get)(state.repeat) != 0;
+        settings.diagrams = (state.api.check_get)(state.diagrams) != 0;
+        settings.page_size_override = None;
+        if let Err(e) = settings.validate() {
+            (l().gtk_label_set_text)(state.error, cstr(&e).as_ptr());
+            return;
+        }
+        *state.preferences.borrow_mut() = settings.clone();
+        let mut request = state.request.take().unwrap();
+        request.settings = settings;
+        let print = state.print;
+        // Destroy may free state through the signal closure notifier. Never
+        // use state again, including during nested native print dispatch.
+        dialog_live = false;
+        destroy(dialog);
+        if print {
+            if let Err(e) = run_native_print(request, None) { output_message(application, "Print failed", &e); }
+        } else { save_pdf_dialog(request); }
+    }) {
+        output_message(application, "Output failed", "An unexpected error interrupted output settings.");
+        if dialog_live { destroy(dialog); }
+    }
+    (l().g_object_unref)(application);
+}
+
+unsafe fn start_output_settings(print: bool) {
+    if !document_open() { return; }
+    let application = (*app()).app;
+    if !output_guard(|| {
+        let request = match snapshot_output() {
+            Ok(r) => r, Err(e) => { output_message(application, "Output unavailable", &e); return; }
+        };
+        let api = match OutputFormLib::load() {
+            Ok(a) => a, Err(e) => { output_message(application, "Output unavailable", &e); return; }
+        };
+        let preferences = (*app()).output_settings.clone();
+        let dialog = (api.dialog)();
+        (l().gtk_window_set_title)(dialog, c"Output settings".as_ptr());
+        set_o(dialog, "transient-for", request.window);
+        set_b(dialog, "modal", true);
+        (api.button)(dialog, c"Cancel".as_ptr(), -6);
+        (api.button)(dialog, if print { c"Print…".as_ptr() } else { c"Export PDF…".as_ptr() }, -3);
+        let content = (api.content)(dialog);
+        for f in [l().gtk_widget_set_margin_start, l().gtk_widget_set_margin_end,
+                  l().gtk_widget_set_margin_top, l().gtk_widget_set_margin_bottom] { f(content, 16); }
+        let row = |label: &str, widget: Ptr| {
+            let line = (l().gtk_box_new)(0, 16);
+            let label = (l().gtk_label_new)(cstr(label).as_ptr());
+            (l().gtk_widget_set_hexpand)(label, 1);
+            (l().gtk_box_append)(line, label);
+            (l().gtk_box_append)(line, widget);
+            (l().gtk_box_append)(content, line);
+        };
+        let dropdown = |label: &str, choices: &[&str], selected| {
+            let strings: Vec<_> = choices.iter().map(|s| cstr(s)).collect();
+            let mut pointers: Vec<_> = strings.iter().map(|s| s.as_ptr()).collect();
+            pointers.push(std::ptr::null());
+            let widget = (api.dropdown)(pointers.as_ptr());
+            (api.select)(widget, selected);
+            row(label, widget); widget
+        };
+        let spin = |label: &str, min, max, value| {
+            let widget = (api.spin)(min, max, 0.5);
+            (api.spin_set)(widget, value);
+            row(label, widget); widget
+        };
+        let settings = &request.settings;
+        use crate::output::{Paper, FitMode};
+        let mode = |m| match m { FitMode::Auto => 0, FitMode::Fit => 1, FitMode::Tile => 2 };
+        let paper = dropdown("Paper", &["A4", "Letter", "A3", "Legal"], match settings.paper { Paper::A4 => 0, Paper::Letter => 1, Paper::A3 => 2, Paper::Legal => 3 });
+        let orientation = dropdown("Orientation", &["Portrait", "Landscape"], u32::from(settings.landscape));
+        let margin = spin("Margins (points)", 0.0, 500.0, settings.margin);
+        let font = spin("Font size (points)", 4.0, 72.0, settings.font_size);
+        let table = dropdown("Wide tables", &["Auto", "Fit", "Tile"], mode(settings.table_mode));
+        let diagram = dropdown("Wide diagrams", &["Auto", "Fit", "Tile"], mode(settings.diagram_mode));
+        let overlap = spin("Tile overlap (points)", 0.0, 500.0, settings.overlap);
+        let repeat = (api.check)(c"Repeat first table column on tiles".as_ptr());
+        (api.check_set)(repeat, c_int::from(settings.repeat_first_column));
+        (l().gtk_box_append)(content, repeat);
+        let diagrams = (api.check)(c"Render diagrams".as_ptr());
+        (api.check_set)(diagrams, c_int::from(settings.diagrams));
+        (l().gtk_box_append)(content, diagrams);
+        let error = (l().gtk_label_new)(c"".as_ptr());
+        set_b(error, "wrap", true);
+        (l().gtk_widget_add_css_class)(error, c"error".as_ptr());
+        (l().gtk_box_append)(content, error);
+        let state = Box::new(OutputForm { dialog, api, request: Some(request), preferences, print,
+            paper, orientation, margin, font, table, diagram, overlap, repeat, diagrams, error });
+        let state = Box::into_raw(state);
+        OUTPUT_FORM = state;
+        (l().g_signal_connect_data)(dialog, c"response".as_ptr(),
+            cbptr::<unsafe extern "C" fn(Ptr, c_int, Ptr)>(output_form_response), state as Ptr,
+            cbptr::<unsafe extern "C" fn(Ptr, Ptr)>(output_form_free), 0);
+        (l().gtk_window_present)(dialog);
+    }) { output_message(application, "Output failed", "Could not open output settings."); }
+}
+
 // ----------------------------------------------------------------- app ---
 
 struct App {
+    closed: bool,
+    output_settings: std::rc::Rc<std::cell::RefCell<crate::output::Settings>>,
     app: Ptr,
     win: Ptr,
     view: Ptr,
@@ -565,6 +1236,10 @@ static mut APP: *mut App = std::ptr::null_mut();
 #[inline]
 unsafe fn app() -> *mut App {
     APP
+}
+
+unsafe fn document_open() -> bool {
+    !APP.is_null() && !(*APP).closed && !(*APP).win.is_null()
 }
 
 fn cstr(s: &str) -> CString {
@@ -712,6 +1387,7 @@ unsafe fn apply_theme_colors() {
 
 // style manager notify::dark handler: (instance, param-spec, user_data).
 unsafe extern "C" fn on_dark_changed(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe {
         apply_theme_colors();
         // tags repaint live, but a picture's palette is baked in at render
@@ -1180,15 +1856,7 @@ unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
         return std::ptr::null_mut();
     }
     // no SVG pixbuf pipeline on this machine: no pictures, no problem
-    let needed: [*const (); 6] = [
-        (l().gdk_pixbuf_loader_new_with_type) as *const (),
-        (l().gdk_pixbuf_loader_write) as *const (),
-        (l().gdk_pixbuf_loader_close) as *const (),
-        (l().gdk_pixbuf_loader_get_pixbuf) as *const (),
-        (l().gdk_pixbuf_get_pixels) as *const (),
-        (l().gdk_pixbuf_get_rowstride) as *const (),
-    ];
-    if needed.iter().any(|p| p.is_null()) {
+    if l().pictures.is_none() {
         return std::ptr::null_mut();
     }
     let src = lines.join("\n");
@@ -1236,26 +1904,21 @@ unsafe fn picture_for(lang: &str, lines: &[String]) -> Ptr {
 /// scale factor is uniform (a 6000x400 flowchart clamps both axes the same,
 /// whatever the zoom), so pictures never squash. Owned reference or null.
 unsafe fn rasterize(svg: &str, zoom: f64) -> Ptr {
+    let Some(pictures) = l().pictures.as_ref() else { return std::ptr::null_mut(); };
     let base = match load_svg(svg, 0, 0) {
         Some(pb) => pb,
         None => return std::ptr::null_mut(),
     };
     // the texture below declares 8-bit RGBA; a loader handing us anything
-    // else is refused rather than misread (on machines whose pixbuf lacks
-    // the introspection helpers the check is skipped, and librsvg's own
-    // "SVG comes out RGBA" guarantee stands in)
-    let check = !((l().gdk_pixbuf_get_n_channels) as *const ()).is_null()
-        && !((l().gdk_pixbuf_get_has_alpha) as *const ()).is_null()
-        && !((l().gdk_pixbuf_get_bits_per_sample) as *const ()).is_null();
-    let ok = !check
-        || ((l().gdk_pixbuf_get_n_channels)(base) == 4
-            && (l().gdk_pixbuf_get_has_alpha)(base) != 0
-            && (l().gdk_pixbuf_get_bits_per_sample)(base) == 8);
+    // else is refused rather than misread.
+    let ok = (pictures.gdk_pixbuf_get_n_channels)(base) == 4
+        && (pictures.gdk_pixbuf_get_has_alpha)(base) != 0
+        && (pictures.gdk_pixbuf_get_bits_per_sample)(base) == 8;
     if !ok {
         (l().g_object_unref)(base);
         return std::ptr::null_mut();
     }
-    let (w, h) = ((l().gdk_pixbuf_get_width)(base), (l().gdk_pixbuf_get_height)(base));
+    let (w, h) = ((pictures.gdk_pixbuf_get_width)(base), (pictures.gdk_pixbuf_get_height)(base));
     if w <= 0 || h <= 0 {
         (l().g_object_unref)(base);
         return std::ptr::null_mut();
@@ -1272,7 +1935,7 @@ unsafe fn rasterize(svg: &str, zoom: f64) -> Ptr {
     let crisp = load_svg(svg, tw, th).unwrap_or(std::ptr::null_mut());
     // a loader that ignores the requested size falls back to resampling
     let out = if crisp.is_null() {
-        (l().gdk_pixbuf_scale_simple)(base, tw, th, 2 /* GDK_INTERP_BILINEAR */)
+        (pictures.gdk_pixbuf_scale_simple)(base, tw, th, 2 /* GDK_INTERP_BILINEAR */)
     } else {
         crisp
     };
@@ -1280,11 +1943,9 @@ unsafe fn rasterize(svg: &str, zoom: f64) -> Ptr {
     out
 }
 
-/// free() a GError when this gdk-pixbuf/glib exports g_error_free; without
-/// the symbol the error paths leak one small struct per failure, which
-/// still beats losing the GUI over a picture.
+/// GError ownership always passes to the caller, including failed loads.
 unsafe fn free_err(err: Ptr) {
-    if !err.is_null() && !((l().g_error_free) as *const ()).is_null() {
+    if !err.is_null() {
         (l().g_error_free)(err);
     }
 }
@@ -1292,25 +1953,26 @@ unsafe fn free_err(err: Ptr) {
 /// One gdk-pixbuf load pass; width/height 0 means the SVG's natural size.
 /// Owned reference on success, null on any failure; every GError is freed.
 unsafe fn load_svg(svg: &str, w: c_int, h: c_int) -> Option<Ptr> {
+    let pictures = l().pictures.as_ref()?;
     let mut err = std::ptr::null_mut();
-    let loader = (l().gdk_pixbuf_loader_new_with_type)(c"svg".as_ptr(), &mut err);
+    let loader = (pictures.gdk_pixbuf_loader_new_with_type)(c"svg".as_ptr(), &mut err);
     if loader.is_null() {
         free_err(err);
         return None; // this machine has no SVG pixbuf loader
     }
-    if w > 0 && h > 0 && !((l().gdk_pixbuf_loader_set_size) as *const ()).is_null() {
-        (l().gdk_pixbuf_loader_set_size)(loader, w, h);
+    if w > 0 && h > 0 {
+        (pictures.gdk_pixbuf_loader_set_size)(loader, w, h);
     }
-    let wrote = (l().gdk_pixbuf_loader_write)(loader, svg.as_ptr(), svg.len(), &mut err) != 0;
+    let wrote = (pictures.gdk_pixbuf_loader_write)(loader, svg.as_ptr(), svg.len(), &mut err) != 0;
     free_err(err);
     err = std::ptr::null_mut();
-    let closed = if wrote { (l().gdk_pixbuf_loader_close)(loader, &mut err) != 0 } else { false };
+    let closed = (pictures.gdk_pixbuf_loader_close)(loader, &mut err) != 0;
     free_err(err);
-    if !closed {
+    if !wrote || !closed {
         (l().g_object_unref)(loader);
         return None;
     }
-    let pb = (l().gdk_pixbuf_loader_get_pixbuf)(loader); // borrowed from the loader
+    let pb = (pictures.gdk_pixbuf_loader_get_pixbuf)(loader); // borrowed from the loader
     let out = if pb.is_null() { None } else { Some((l().g_object_ref)(pb)) };
     (l().g_object_unref)(loader);
     out
@@ -1321,9 +1983,10 @@ unsafe fn load_svg(svg: &str, w: c_int, h: c_int) -> Option<Ptr> {
 /// reference to the pixbuf and drops it when the last user of the bytes is
 /// gone, so the pixels stay alive exactly as long as the texture reads them.
 unsafe fn texture_of_pixbuf(pb: Ptr) -> Ptr {
-    let (w, h) = ((l().gdk_pixbuf_get_width)(pb), (l().gdk_pixbuf_get_height)(pb));
-    let stride = (l().gdk_pixbuf_get_rowstride)(pb);
-    let px = (l().gdk_pixbuf_get_pixels)(pb);
+    let Some(pictures) = l().pictures.as_ref() else { return std::ptr::null_mut(); };
+    let (w, h) = ((pictures.gdk_pixbuf_get_width)(pb), (pictures.gdk_pixbuf_get_height)(pb));
+    let stride = (pictures.gdk_pixbuf_get_rowstride)(pb);
+    let px = (pictures.gdk_pixbuf_get_pixels)(pb);
     if w <= 0 || h <= 0 || stride <= 0 || px.is_null() {
         return std::ptr::null_mut();
     }
@@ -1344,6 +2007,10 @@ unsafe fn texture_of_pixbuf(pb: Ptr) -> Ptr {
 /// anchor occupies one buffer char, which is what `emit_off` and the scroll
 /// anchors must count.
 unsafe fn emit_picture(pb: Ptr, depth: usize) -> bool {
+    let Some(pictures) = l().pictures.as_ref() else {
+        (l().g_object_unref)(pb);
+        return false;
+    };
     let tex = texture_of_pixbuf(pb);
     if tex.is_null() {
         (l().g_object_unref)(pb);
@@ -1368,7 +2035,7 @@ unsafe fn emit_picture(pb: Ptr, depth: usize) -> bool {
     let img = (l().gtk_picture_new)();
     (l().gtk_picture_set_paintable)(img, tex);
     (l().g_object_unref)(tex);
-    (l().gtk_widget_set_size_request)(img, (l().gdk_pixbuf_get_width)(pb), (l().gdk_pixbuf_get_height)(pb));
+    (l().gtk_widget_set_size_request)(img, (pictures.gdk_pixbuf_get_width)(pb), (pictures.gdk_pixbuf_get_height)(pb));
     (l().g_object_unref)(pb); // the texture holds what it needs in its bytes
     (l().gtk_text_view_add_child_at_anchor)(a.view, img, anchor);
     // deliberately NOT unreferenced: gtk_text_buffer_create_child_anchor is
@@ -1593,6 +2260,7 @@ unsafe fn rescroll_step(mark: Ptr, top: bool) -> bool {
 }
 
 unsafe extern "C" fn on_rescroll(_data: Ptr) -> c_int {
+    if !document_open() { return 0; }
     unsafe {
         let a = &mut *app();
         let Some((mark, top)) = a.rescroll else { return 0 };
@@ -1887,13 +2555,14 @@ unsafe fn select_file(delta: isize) {
 }
 
 unsafe extern "C" fn act_open(_action: Ptr, _param: Ptr, _data: Ptr) {
-    let a = &*app();
-    if a.dialog.is_null() {
+    if !document_open() { return; }
+    let window = (*app()).win;
+    if (*app()).dialog.is_null() {
         (*app()).dialog = (l().gtk_file_dialog_new)();
     }
     (l().gtk_file_dialog_open)(
         (*app()).dialog,
-        a.win,
+        window,
         std::ptr::null_mut(),
         Some(on_dialog_done),
         std::ptr::null_mut(),
@@ -1901,32 +2570,50 @@ unsafe extern "C" fn act_open(_action: Ptr, _param: Ptr, _data: Ptr) {
 }
 
 unsafe extern "C" fn on_dialog_done(source: Ptr, result: Ptr, _data: Ptr) {
-    let mut err: Ptr = std::ptr::null_mut();
-    let gfile = (l().gtk_file_dialog_open_finish)(source, result, &mut err);
-    if gfile.is_null() {
-        return; // cancelled or error (one leaked GError per failed open at worst)
+    if !output_guard(|| {
+        let mut err: Ptr = std::ptr::null_mut();
+        let gfile = (l().gtk_file_dialog_open_finish)(source, result, &mut err);
+        if !err.is_null() {
+            let cancelled = SaveLib::load().is_ok_and(|api|
+                (api.dismissed)(err, (api.dialog_domain)(), 1) != 0
+                || (api.dismissed)(err, (api.dialog_domain)(), 2) != 0
+                || (api.dismissed)(err, (api.io_domain)(), 19) != 0);
+            let message = output_error(err);
+            if !cancelled && document_open() { output_message((*app()).app, "Open failed", &message); }
+        }
+        if gfile.is_null() { return; }
+        // Copy while the GFile owns the path, then release it on every path.
+        let raw_path = (l().g_file_peek_path)(gfile);
+        let path = if raw_path.is_null() { None }
+            else { Some(CStr::from_ptr(raw_path).to_string_lossy().into_owned()) };
+        (l().g_object_unref)(gfile);
+        if !document_open() { return; }
+        let Some(path) = path else {
+            output_message((*app()).app, "Open failed", "Choose a local Markdown file.");
+            return;
+        };
+        let a = &mut *app();
+        if let Some(pos) = a.files.iter().position(|f| *f == path) { a.idx = pos; }
+        else { a.files.push(path); a.idx = a.files.len() - 1; }
+        a.content = None;
+        load_current(false);
+    }) {
+        if document_open() { output_message((*app()).app, "Open failed", "An unexpected error interrupted opening the document."); }
     }
-    let path = CStr::from_ptr((l().g_file_peek_path)(gfile)).to_string_lossy().into_owned();
-    let a = &mut *app();
-    if let Some(pos) = a.files.iter().position(|f| *f == path) {
-        a.idx = pos;
-    } else {
-        a.files.push(path);
-        a.idx = a.files.len() - 1;
-    }
-    a.content = None;
-    load_current(false);
 }
 
 unsafe extern "C" fn act_find(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { show_findbar() }
 }
 
 unsafe extern "C" fn act_reload(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { load_current(true) }
 }
 
 unsafe extern "C" fn act_zoom_in(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe {
         (*app()).zoom = ((*app()).zoom * 1.15).min(3.0);
         apply_css(); // re-measures mono_px
@@ -1935,6 +2622,7 @@ unsafe extern "C" fn act_zoom_in(_: Ptr, _: Ptr, _: Ptr) {
 }
 
 unsafe extern "C" fn act_zoom_out(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe {
         (*app()).zoom = ((*app()).zoom / 1.15).max(0.5);
         apply_css(); // re-measures mono_px
@@ -1943,6 +2631,7 @@ unsafe extern "C" fn act_zoom_out(_: Ptr, _: Ptr, _: Ptr) {
 }
 
 unsafe extern "C" fn act_zoom_reset(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe {
         (*app()).zoom = 1.0;
         apply_css(); // re-measures mono_px
@@ -1951,49 +2640,67 @@ unsafe extern "C" fn act_zoom_reset(_: Ptr, _: Ptr, _: Ptr) {
 }
 
 unsafe extern "C" fn act_next(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { select_file(1) }
 }
 
 unsafe extern "C" fn act_prev(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { select_file(-1) }
 }
 
 unsafe extern "C" fn act_quit(_: Ptr, _: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { (l().gtk_window_close)((*app()).win) }
 }
 
-// window destroy handler: (widget, user_data). Once the window is gone the
-// polling ticks must not touch the view or the disposed window any more;
-// nulling win is what their is_null guards check.
+// GtkWindow's destroy signal can be delayed by output jobs retaining a
+// reference. Mark closure *before* the default close handler disposes widgets.
+unsafe extern "C" fn on_win_close(_: Ptr, _: Ptr) -> c_int {
+    (*app()).closed = true;
+    (*app()).win = std::ptr::null_mut();
+    0 // allow GTK's default close handler
+}
+
+unsafe extern "C" fn on_win_application(window: Ptr, _: Ptr, _: Ptr) {
+    if (l().gtk_window_get_application)(window).is_null() { on_win_close(window, std::ptr::null_mut()); }
+}
+
 unsafe extern "C" fn on_win_destroy(_: Ptr, _: Ptr) {
-    unsafe { (*app()).win = std::ptr::null_mut() }
+    on_win_close(std::ptr::null_mut(), std::ptr::null_mut());
 }
 
 // small-button handlers: (widget, user_data)
 
 unsafe extern "C" fn click_find_next(_: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { do_search(false, false, false) }
 }
 
 unsafe extern "C" fn click_find_prev(_: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { do_search(false, true, false) }
 }
 
 unsafe extern "C" fn click_find_close(_: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { hide_findbar() }
 }
 
 unsafe extern "C" fn entry_changed(_: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { do_search(true, false, false) }
 }
 
 unsafe extern "C" fn entry_activate(_: Ptr, _: Ptr) {
+    if !document_open() { return; }
     unsafe { do_search(false, false, false) }
 }
 
 // key-pressed handler: (controller, keyval, keycode, state, user_data).
 // Returning FALSE lets the event continue to the entry's own handling.
 unsafe extern "C" fn key_press(_ctrl: Ptr, keyval: c_uint, _code: c_uint, _state: c_uint, _data: Ptr) -> c_int {
+    if !document_open() { return 0; }
     if keyval == KEY_ESCAPE {
         unsafe {
             if (*app()).findbar_visible() {
@@ -2010,6 +2717,7 @@ unsafe extern "C" fn key_press(_ctrl: Ptr, keyval: c_uint, _code: c_uint, _state
 // before the (full) re-render, so a drag-resize costs one render, not one
 // per tick.
 unsafe extern "C" fn on_relayout_tick(_data: Ptr) -> c_int {
+    if !document_open() { return 0; }
     unsafe {
         let a = &mut *app();
         if a.status_shown || a.win.is_null() || a.src_cache.is_none() {
@@ -2038,6 +2746,7 @@ static mut FIRST_LOAD_TRIES: u32 = 0;
 // First document load, deferred until the view is allocated (~1.5 s at most,
 // then the default-size estimate is used).
 unsafe extern "C" fn on_first_load(_data: Ptr) -> c_int {
+    if !document_open() { return 0; }
     unsafe {
         let a = &*app();
         if a.win.is_null() {
@@ -2053,6 +2762,7 @@ unsafe extern "C" fn on_first_load(_data: Ptr) -> c_int {
 }
 
 unsafe extern "C" fn on_tick(_data: Ptr) -> c_int {
+    if !document_open() { return 0; }
     unsafe {
         let a = &*app();
         if !a.win.is_null() && a.content.is_none() {
@@ -2072,12 +2782,14 @@ unsafe extern "C" fn on_tick(_data: Ptr) -> c_int {
 
 unsafe extern "C" fn on_activate(_app: Ptr, _data: Ptr) {
     let a = &mut *app();
-    if !a.win.is_null() {
+    if a.closed || !a.win.is_null() {
         return; // secondary activations are ignored (NON_UNIQUE apps have none anyway)
     }
     a.win = (l().adw_application_window_new)(a.app);
     (l().gtk_window_set_default_size)(a.win, 1100, 780);
     connect(a.win, "destroy", cbptr::<unsafe extern "C" fn(Ptr, Ptr)>(on_win_destroy));
+    connect(a.win, "close-request", cbptr::<unsafe extern "C" fn(Ptr, Ptr) -> c_int>(on_win_close));
+    connect(a.win, "notify::application", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(on_win_application));
 
     let toolbar = (l().adw_toolbar_view_new)();
     let header = (l().adw_header_bar_new)();
@@ -2230,6 +2942,8 @@ unsafe fn build_menu(btn: Ptr) {
         (l().g_menu_append)(menu, lb.as_ptr(), a.as_ptr());
     };
     add("win.open", "_Open…");
+    add("win.print", "_Print…");
+    add("win.export-pdf", "Export _PDF…");
     add("win.find", "_Find…");
     add("win.reload", "_Reload");
     let section = (l().g_menu_new)();
@@ -2266,6 +2980,8 @@ unsafe fn add_actions() {
         (l().g_action_map_add_action)(win, act);
     };
     add("open", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(act_open));
+    add("print", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(act_print));
+    add("export-pdf", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(act_export_pdf));
     add("find", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(act_find));
     add("reload", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(act_reload));
     add("zoom-in", cbptr::<unsafe extern "C" fn(Ptr, Ptr, Ptr)>(act_zoom_in));
@@ -2286,6 +3002,7 @@ unsafe fn add_accels() {
         (l().gtk_application_set_accels_for_action)(app, a.as_ptr(), ptrs.as_ptr());
     };
     accel("win.open", &["<Control>o"]);
+    accel("win.print", &["<Control>p"]);
     accel("win.find", &["<Control>f"]);
     accel("win.reload", &["F5", "<Control>r"]);
     accel("win.zoom-in", &["<Control>plus", "<Control>equal"]);
@@ -2301,11 +3018,18 @@ unsafe fn add_accels() {
 // MDGLASS_GUI_SCRIPT="action:find;find:text;esc;shot:/tmp/a.png;quit" drives the
 // real window for end-to-end tests (e.g. under GDK_BACKEND=broadway), one
 // step every 700 ms. Not part of the user interface.
+// pdf:PATH uses shared export; print-pdf:PATH exercises GTK begin/draw-page
+// with ACTION_EXPORT. output-response:cancel/accept drives the settings form.
+// pdf-async:PATH uses the real worker/progress path; pdf-cancel:PATH starts
+// that same path with cancellation already set for deterministic testing.
+// close closes only the document, retaining script polling for output-lifetime
+// checks; quit stops polling too. Closed-document widget commands are ignored.
 
 static mut SCRIPT_POS: usize = 0;
 static mut SHOT_RETRIES: u32 = 0;
 
 unsafe fn snapshot_png(path: &str) -> bool {
+    if !document_open() { return false; }
     let a = &*app();
     let (w, h) = ((l().gtk_widget_get_width)(a.win), (l().gtk_widget_get_height)(a.win));
     let paintable = (l().gtk_widget_paintable_new)(a.win);
@@ -2336,16 +3060,20 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
     let Some(step) = steps.get(pos) else { return 0 };
     let (kind, arg) = step.split_once(':').unwrap_or((step, ""));
     eprintln!("mdglass-script: {step}");
-    let a = &*app();
+    if !document_open() && !matches!(kind, "output-response" | "gset" | "quit") {
+        eprintln!("mdglass-script: ignored {kind}: document window closed");
+        return 1;
+    }
+    let (win, entry, hits) = { let a = &*app(); (a.win, a.entry, a.hits) };
     match kind {
         "action" => {
             let n = cstr(arg);
-            (l().g_action_group_activate_action)(a.win, n.as_ptr(), std::ptr::null_mut());
+            (l().g_action_group_activate_action)(win, n.as_ptr(), std::ptr::null_mut());
         }
         "find" => {
             let t = cstr(arg);
-            (l().gtk_editable_set_text)(a.entry, t.as_ptr());
-            let lbl = CStr::from_ptr((l().gtk_label_get_text)(a.hits)).to_string_lossy().into_owned();
+            (l().gtk_editable_set_text)(entry, t.as_ptr());
+            let lbl = CStr::from_ptr((l().gtk_label_get_text)(hits)).to_string_lossy().into_owned();
             eprintln!("mdglass-script: hits label = {lbl:?}");
         }
         "next" => click_find_next(std::ptr::null_mut(), std::ptr::null_mut()),
@@ -2370,6 +3098,50 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
         "esc" => {
             key_press(std::ptr::null_mut(), KEY_ESCAPE, 0, 0, std::ptr::null_mut());
         }
+        "pdf" | "print-pdf" => {
+            let application = (*app()).app;
+            if !output_guard(|| {
+                let outcome = snapshot_output().and_then(|request| {
+                    let path = Path::new(arg);
+                    refuse_input_overwrite(&request, path)?;
+                    if kind == "print-pdf" { run_native_print(request, Some(path)) }
+                    else {
+                        crate::output::export_pdf(&request.source, path, &request.settings).map(|warnings| {
+                            for warning in warnings { eprintln!("mdglass-script: PDF warning: {warning}"); }
+                        })
+                    }
+                });
+                match outcome {
+                    Ok(()) => eprintln!("mdglass-script: {kind} {arg} ok"),
+                    Err(e) => {
+                        eprintln!("mdglass-script: {kind} FAILED: {e}");
+                        output_message(application, "Output failed", &e);
+                    }
+                }
+            }) { output_message(application, "Output failed", "Unexpected scripted output failure."); }
+        }
+        "pdf-async" | "pdf-cancel" => {
+            let application = (*app()).app;
+            if !output_guard(|| {
+                let outcome = snapshot_output().and_then(|mut request| {
+                    start_pdf_worker(&mut request, Path::new(arg).to_path_buf(), kind == "pdf-cancel", true)
+                });
+                match outcome {
+                    Ok(()) => eprintln!("mdglass-script: {kind} started {arg}"),
+                    Err(e) => {
+                        eprintln!("mdglass-script: {kind} FAILED: {e}");
+                        output_message(application, "PDF export failed", &e);
+                    }
+                }
+            }) { output_message(application, "PDF export failed", "Could not start scripted PDF export."); }
+        }
+        "output-response" => {
+            if !OUTPUT_FORM.is_null() {
+                let dialog = (*OUTPUT_FORM).dialog;
+                let response = (*OUTPUT_FORM).api.response;
+                response(dialog, if arg == "accept" { -3 } else { -6 });
+            }
+        }
         "shot" => {
             if !snapshot_png(arg) && SHOT_RETRIES < 10 {
                 SHOT_RETRIES += 1;
@@ -2379,9 +3151,10 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
             }
         }
         "quit" => {
-            (l().gtk_window_close)(a.win);
+            if document_open() { (l().gtk_window_close)(win); }
             return 0;
         }
+        "close" => { (l().gtk_window_close)(win); }
         _ => eprintln!("mdglass-script: unknown step {step}"),
     }
     1
@@ -2404,6 +3177,8 @@ pub fn run(files: Vec<String>, content: Option<String>) -> Result<(), String> {
         return Err("cannot create Adwaita application".into());
     }
     let boxed = Box::new(App {
+        closed: false,
+        output_settings: std::rc::Rc::new(std::cell::RefCell::new(crate::output::Settings::default())),
         app,
         win: std::ptr::null_mut(),
         view: std::ptr::null_mut(),

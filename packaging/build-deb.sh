@@ -3,6 +3,7 @@
 # Needs only dpkg-dev tools (dpkg-deb, dpkg-shlibdeps) and cargo.
 #   MAINTAINER="Name <email>"  override the Maintainer field
 #   DEB_REVISION=N             package revision (default: from debian/changelog)
+#   MDGLASS_BIN=/path          package a prebuilt compatibility-target binary
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -12,9 +13,14 @@ ARCH="$(dpkg --print-architecture)"
 MAINTAINER="${MAINTAINER:-Rafal Okninski <hpn777@gmail.com>}"
 PKG="mdglass_${VERSION}-${REVISION}_${ARCH}"
 
-cargo build --release --locked
-TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' | head -1)"
-BIN="$TARGET_DIR/release/mdglass"
+if [ -n "${MDGLASS_BIN:-}" ]; then
+    BIN="$(realpath "$MDGLASS_BIN")"
+    [ -x "$BIN" ] || { echo "build-deb: MDGLASS_BIN is not executable: $BIN" >&2; exit 1; }
+else
+    cargo build --release --locked
+    TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p' | head -1)"
+    BIN="$TARGET_DIR/release/mdglass"
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -55,7 +61,7 @@ Architecture: ${ARCH}
 Maintainer: ${MAINTAINER}
 Installed-Size: $(du -sk --exclude=DEBIAN "$ROOT" | cut -f1)
 Depends: ${DEPENDS}
-Recommends: libgtk-4-1, libadwaita-1-0
+Recommends: libgtk-4-1, libadwaita-1-0, libcairo2, libpango-1.0-0, libpangocairo-1.0-0, librsvg2-2, fonts-dejavu-core
 Section: text
 Priority: optional
 Description: super fast markdown viewer: terminal pager + GNOME preview

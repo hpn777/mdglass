@@ -58,9 +58,23 @@ def count_args(s):
     return n
 
 bad = 0; checked = 0; unknown = []
+bindings = []
 for m in re.finditer(r'g(?:s|opt)!\((?:\w+[ ,]*)?"(\w+)", unsafe extern "C" fn\(', src):
-    name = m.group(1)
-    i = m.end(); depth = 1; start = i
+    bindings.append((m.group(1), m.end()))
+# Output capabilities are intentionally loaded separately from the main GUI
+# table. Their field types are inferred by tf(), so audit those as well.
+for st in re.finditer(r'struct (\w+)\s*\{(.*?)\n\}', src, re.S):
+    fields = {m.group(1): st.start(2) + m.end() for m in re.finditer(
+        r'(\w+): unsafe extern "C" fn\(', st.group(2))}
+    if not fields:
+        continue
+    impl = re.search(r'impl ' + re.escape(st.group(1)) + r'\s*\{(.*?)\n\}', src, re.S)
+    if impl:
+        for m in re.finditer(r'(\w+): tf\(\w+, "(\w+)"\)\?', impl.group(1)):
+            if m.group(1) in fields:
+                bindings.append((m.group(2), fields[m.group(1)]))
+for name, start in bindings:
+    i = start; depth = 1
     while depth:
         c = src[i]
         if c == "(": depth += 1

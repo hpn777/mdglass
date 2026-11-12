@@ -8,6 +8,7 @@ A fast, tiny Markdown viewer for Linux, for the terminal and the GNOME desktop.
 - Terminal pager with search, or a native GNOME window (`--gui`)
 - Tables, task lists, quotes, highlighted code blocks and diagrams
 - Find, zoom, and live reload when the file changes
+- Native printing and headless, paginated PDF export, with repeating table headers
 
 ## Install
 
@@ -51,6 +52,52 @@ between art and source, or start with `--no-diagrams`. Piped output stays markdo
 `examples/diagrams.md` demos every kind, with `examples/screenshots/` as proof.
 
 See `man mdglass` for all options.
+
+## Printing and PDF export
+
+In the window, use **Print…** (`Ctrl+P`) or **Export as PDF…** from the menu.
+Printing uses the selected printer's page geometry, not the window width or zoom.
+Both actions offer paper, font, margin, table and diagram layout controls;
+preferences persist for the current window session.
+PDF export runs in the background with a Cancel button; it uses a document
+snapshot, so reloading or closing the document cannot change the export.
+For headless export:
+
+```bash
+mdglass --export-pdf notes.pdf notes.md
+mdglass --export-pdf wide.pdf --paper a4 --landscape --table-mode tile notes.md
+cat notes.md | mdglass --export-pdf notes.pdf -
+```
+
+Output settings use points (72 per inch): `--margin 36`, `--font-size 10`,
+`--paper a4|a3|letter|legal`, and `--landscape`. Tables wrap without truncating
+cells and repeat headers across pages. `--table-mode auto|fit|tile` controls
+fitting versus column bands; bands repeat the first identifier column unless
+`--no-repeat-first-column` is set. Box-drawing tables inside code fences remain
+code, not semantic tables.
+
+Diagrams use the built-in engines, never an external renderer. Use
+`--diagram-mode auto|fit|tile` and `--overlap 12` for oversized diagrams.
+Tiling preserves geometry with overlap and continuation labels; it cannot
+guarantee semantic breaks between diagram nodes. `--no-diagrams` exports
+source instead. Unsupported diagrams stay source with a diagnostic.
+`--no-urls` omits printed link targets; link labels remain readable text.
+
+The executable remains one file, with no new Cargo dependencies or browser.
+PDF output lazily loads system **Cairo, Pango and PangoCairo**; diagram output
+also uses **librsvg**. It needs installed fonts, but no GTK initialization,
+display server, Python, Node, or conversion tools. On Debian/Ubuntu these
+libraries are supplied by `libcairo2`, `libpango-1.0-0`, `libpangocairo-1.0-0`
+and `librsvg2-2`. Native printing additionally needs the existing GTK GUI
+libraries and a working system print service/desktop portal. This is a single
+distributed binary, **not a statically self-contained graphics stack**.
+
+PDFs are written to a private temporary file beside the destination and moved
+into place only after successful completion. The CLI refuses to overwrite its
+Markdown input. PDF inspection tools used by the test suite are not runtime
+dependencies.
+Cancellation is cooperative between layout operations and pages; an in-flight
+diagram-renderer call must return before cancellation can finish.
 
 ## Development
 
