@@ -1,3 +1,13 @@
+mdglass (0.1.0-12) unstable; urgency=medium
+
+  * Remove PDF export success popups; show dismissible dialogs only on errors.
+  * Add an explicit Close button to output error dialogs.
+  * Improve print and PDF settings with section headings, aligned controls,
+    generous spacing and scrolling on smaller windows.
+  * Test the production export completion path and error-dialog dismissal.
+
+ -- Rafal Okninski <hpn777@gmail.com>  Thu, 12 Nov 2026 11:30:00 +0000
+
 mdglass (0.1.0-11) unstable; urgency=medium
 
   * Refresh Flatpak's offline dependency manifest from Cargo.lock and include

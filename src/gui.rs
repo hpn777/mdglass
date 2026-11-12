@@ -569,16 +569,31 @@ unsafe fn output_error(error: Ptr) -> String {
 // A separate application window also works after the originating document
 // window closes. No asynchronous output callback ever dereferences APP.
 unsafe fn output_message(application: Ptr, title: &str, message: &str) {
-    let win = (l().adw_application_window_new)(application);
+    let api = match OutputFormLib::load() {
+        Ok(api) => api,
+        Err(e) => { eprintln!("mdglass: {title}: {message} ({e})"); return; }
+    };
+    let win = (api.dialog)();
+    set_o(win, "application", application);
     (l().gtk_window_set_title)(win, cstr(title).as_ptr());
     (l().gtk_window_set_default_size)(win, 520, 180);
+    (api.button)(win, c"Close".as_ptr(), -7);
     let label = (l().gtk_label_new)(cstr(message).as_ptr());
     set_b(label, "wrap", true);
     set_b(label, "selectable", true);
     for f in [l().gtk_widget_set_margin_start, l().gtk_widget_set_margin_end,
               l().gtk_widget_set_margin_top, l().gtk_widget_set_margin_bottom] { f(label, 24); }
-    (l().adw_application_window_set_content)(win, label);
+    (l().gtk_box_append)((api.content)(win), label);
+    (l().g_signal_connect_data)(win, c"response".as_ptr(),
+        cbptr::<unsafe extern "C" fn(Ptr, c_int, Ptr)>(output_message_response),
+        std::ptr::null_mut(), std::ptr::null_mut(), 0);
     (l().gtk_window_present)(win);
+}
+
+unsafe extern "C" fn output_message_response(dialog: Ptr, _: c_int, _: Ptr) {
+    let _ = output_guard(|| {
+        if let Ok(api) = OutputFormLib::load() { (api.destroy)(dialog); }
+    });
 }
 
 // Catch all Rust failures before returning to GTK's C signal machinery.
@@ -665,7 +680,6 @@ impl Drop for OutputOperation {
 }
 
 unsafe fn run_native_print(request: PdfSave, export: Option<&Path>) -> Result<(), String> {
-        let application = request.application;
         let window = if (l().gtk_window_get_application)(request.window).is_null() {
             std::ptr::null_mut()
         } else { request.window };
@@ -725,7 +739,7 @@ unsafe fn run_native_print(request: PdfSave, export: Option<&Path>) -> Result<()
             if let Some(job) = state.job {
                 state.warnings.extend_from_slice(job.warnings());
             }
-            if !state.warnings.is_empty() && export.is_none() { output_message(application, "Print warnings", &state.warnings.join("\n")); }
+            if !state.warnings.is_empty() && export.is_none() { eprintln!("mdglass: Print warnings: {}", state.warnings.join("\n")); }
             for warning in &state.warnings { eprintln!("mdglass-print: {warning}"); }
           }
           2 if export.is_none() => {} // CANCEL is a normal interactive outcome
@@ -911,9 +925,7 @@ unsafe extern "C" fn pdf_worker_poll(data: Ptr) -> c_int {
                     eprintln!("mdglass-script: {} done ok", state.marker);
                     for warning in warnings { eprintln!("mdglass-script: PDF warning: {warning}"); }
                 } else {
-                    let message = if warnings.is_empty() { "PDF exported successfully.".into() }
-                        else { format!("PDF exported with warnings:\n{}", warnings.join("\n")) };
-                    output_message(state.application, "Export PDF", &message);
+                    for warning in warnings { eprintln!("mdglass: PDF warning: {warning}"); }
                 }
             }
             Err(e) if e == "PDF export cancelled" => {
@@ -1084,18 +1096,34 @@ unsafe fn start_output_settings(print: bool) {
         };
         let preferences = (*app()).output_settings.clone();
         let dialog = (api.dialog)();
-        (l().gtk_window_set_title)(dialog, c"Output settings".as_ptr());
+        (l().gtk_window_set_title)(dialog, if print { c"Print settings".as_ptr() } else { c"PDF export settings".as_ptr() });
+        (l().gtk_window_set_default_size)(dialog, 560, 600);
         set_o(dialog, "transient-for", request.window);
         set_b(dialog, "modal", true);
         (api.button)(dialog, c"Cancel".as_ptr(), -6);
         (api.button)(dialog, if print { c"Print…".as_ptr() } else { c"Export PDF…".as_ptr() }, -3);
-        let content = (api.content)(dialog);
+        let area = (api.content)(dialog);
+        let scroll = (l().gtk_scrolled_window_new)();
+        (l().gtk_scrolled_window_set_policy)(scroll, 2, POLICY_AUTOMATIC);
+        (l().gtk_widget_set_vexpand)(scroll, 1);
+        (l().gtk_box_append)(area, scroll);
+        let content = (l().gtk_box_new)(ORIENT_VERTICAL, 12);
+        (l().gtk_scrolled_window_set_child)(scroll, content);
         for f in [l().gtk_widget_set_margin_start, l().gtk_widget_set_margin_end,
-                  l().gtk_widget_set_margin_top, l().gtk_widget_set_margin_bottom] { f(content, 16); }
+                  l().gtk_widget_set_margin_top, l().gtk_widget_set_margin_bottom] { f(content, 24); }
+        let section = |title: &str, first: bool| {
+            let label = (l().gtk_label_new)(cstr(title).as_ptr());
+            set_f(label, "xalign", 0.0);
+            (l().gtk_widget_add_css_class)(label, c"heading".as_ptr());
+            if !first { (l().gtk_widget_set_margin_top)(label, 12); }
+            (l().gtk_box_append)(content, label);
+        };
         let row = |label: &str, widget: Ptr| {
-            let line = (l().gtk_box_new)(0, 16);
+            let line = (l().gtk_box_new)(0, 24);
             let label = (l().gtk_label_new)(cstr(label).as_ptr());
+            set_f(label, "xalign", 0.0);
             (l().gtk_widget_set_hexpand)(label, 1);
+            (l().gtk_widget_set_size_request)(widget, 210, 36);
             (l().gtk_box_append)(line, label);
             (l().gtk_box_append)(line, widget);
             (l().gtk_box_append)(content, line);
@@ -1116,13 +1144,16 @@ unsafe fn start_output_settings(print: bool) {
         let settings = &request.settings;
         use crate::output::{Paper, FitMode};
         let mode = |m| match m { FitMode::Auto => 0, FitMode::Fit => 1, FitMode::Tile => 2 };
+        section("Page", true);
         let paper = dropdown("Paper", &["A4", "Letter", "A3", "Legal"], match settings.paper { Paper::A4 => 0, Paper::Letter => 1, Paper::A3 => 2, Paper::Legal => 3 });
         let orientation = dropdown("Orientation", &["Portrait", "Landscape"], u32::from(settings.landscape));
         let margin = spin("Margins (points)", 0.0, 500.0, settings.margin);
         let font = spin("Font size (points)", 4.0, 72.0, settings.font_size);
+        section("Tables and diagrams", false);
         let table = dropdown("Wide tables", &["Auto", "Fit", "Tile"], mode(settings.table_mode));
         let diagram = dropdown("Wide diagrams", &["Auto", "Fit", "Tile"], mode(settings.diagram_mode));
         let overlap = spin("Tile overlap (points)", 0.0, 500.0, settings.overlap);
+        section("Content", false);
         let repeat = (api.check)(c"Repeat first table column on tiles".as_ptr());
         (api.check_set)(repeat, c_int::from(settings.repeat_first_column));
         (l().gtk_box_append)(content, repeat);
@@ -3120,11 +3151,11 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
                 }
             }) { output_message(application, "Output failed", "Unexpected scripted output failure."); }
         }
-        "pdf-async" | "pdf-cancel" => {
+        "pdf-async" | "pdf-cancel" | "pdf-ui" => {
             let application = (*app()).app;
             if !output_guard(|| {
                 let outcome = snapshot_output().and_then(|mut request| {
-                    start_pdf_worker(&mut request, Path::new(arg).to_path_buf(), kind == "pdf-cancel", true)
+                    start_pdf_worker(&mut request, Path::new(arg).to_path_buf(), kind == "pdf-cancel", kind != "pdf-ui")
                 });
                 match outcome {
                     Ok(()) => eprintln!("mdglass-script: {kind} started {arg}"),
@@ -3134,6 +3165,26 @@ unsafe extern "C" fn on_script_step(_data: Ptr) -> c_int {
                     }
                 }
             }) { output_message(application, "PDF export failed", "Could not start scripted PDF export."); }
+        }
+        "output-windows" | "output-dismiss" => {
+            // Exercise real, non-scripted result windows and their Close response.
+            #[repr(C)]
+            struct List { data: Ptr, next: *mut List, prev: *mut List }
+            let _ = output_guard(|| {
+                let gtk = dlopen(c"libgtk-4.so.1".as_ptr(), RTLD_LAZY | RTLD_GLOBAL);
+                let windows: unsafe extern "C" fn(Ptr) -> *mut List = tf(gtk, "gtk_application_get_windows").unwrap();
+                let mut node = windows((*app()).app);
+                let mut count = 0;
+                while !node.is_null() {
+                    let window = (*node).data;
+                    node = (*node).next;
+                    count += 1;
+                    if kind == "output-dismiss" && window != win {
+                        if let Ok(api) = OutputFormLib::load() { (api.response)(window, -7); }
+                    }
+                }
+                eprintln!("mdglass-script: output windows {count}");
+            });
         }
         "output-response" => {
             if !OUTPUT_FORM.is_null() {

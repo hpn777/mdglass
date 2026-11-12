@@ -58,6 +58,12 @@
     <control>pointing</control>
   </supports>
   <releases>
+    <release version="0.1.0-12" date="2026-11-12">
+      <description>
+        <p>PDF export completes without a success popup, error dialogs have a Close
+        button, and print and PDF settings have clearer sections and spacing.</p>
+      </description>
+    </release>
     <release version="0.1.0-11" date="2026-11-12">
       <description>
         <p>Printing and PDF export release with refreshed offline Flatpak dependencies

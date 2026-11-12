@@ -229,6 +229,25 @@ class GuiOutputChecks(unittest.TestCase):
         self.assertEqual(result.returncode, 0, stderr)
         self.assertNotRegex(stderr, r"-(?:WARNING|CRITICAL|ERROR)\b", stderr)
 
+    def test_success_has_no_popup_and_errors_can_be_closed(self):
+        source = self.work / "small.md"
+        source.write_text("# Export test\n\nA short document.\n", encoding="utf-8")
+        dest = self.work / "silent-success.pdf"
+        # Use the production result path, not the scripted-success shortcut.
+        # Script steps are spaced apart to let the background job finish.
+        script = (f"pdf-ui:{dest};wait;wait;output-windows;"
+                  f"pdf-ui:{self.work / 'missing' / 'error.pdf'};wait;wait;"
+                  "output-windows;output-dismiss;output-windows;quit")
+        result = subprocess.run([MDGLASS, "--gui", source], input=b"",
+                                env=dict(self.env, MDGLASS_GUI_SCRIPT=script),
+                                capture_output=True, timeout=30)
+        stderr = result.stderr.decode(errors="replace")
+        self.assertEqual(result.returncode, 0, stderr)
+        self.assertTrue(dest.is_file(), stderr)
+        self.assertEqual(re.findall(r"output windows (\d+)", stderr),
+                         ["1", "2", "2", "1"], stderr)
+        self.assertNotRegex(stderr, r"-(?:WARNING|CRITICAL|ERROR)\b", stderr)
+
     def test_independent_gui_instances_do_not_forward_jobs(self):
         processes = []
         destinations = [self.work / f"independent-{i}.pdf" for i in range(2)]
